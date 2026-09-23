@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 
 try:
     if "/opt/pr0t31n/shared" not in sys.path:
