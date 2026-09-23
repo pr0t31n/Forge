@@ -17,6 +17,24 @@ def _has(binary):
     return shutil.which(binary) is not None
 
 
+def _brew_installed(formula):
+    try:
+        r = subprocess.run(["brew", "list", "--formula", "-1"],
+                           capture_output=True, text=True, timeout=15)
+        return formula in r.stdout.split()
+    except Exception:
+        return False
+
+
+def _brew_cask_installed(cask):
+    try:
+        r = subprocess.run(["brew", "list", "--cask", "-1"],
+                           capture_output=True, text=True, timeout=15)
+        return cask in r.stdout.split()
+    except Exception:
+        return False
+
+
 def install_system_deps():
     """Install az + gcloud CLIs via the platform package manager when available."""
     if sys.platform.startswith("linux"):
@@ -24,32 +42,91 @@ def install_system_deps():
             print("[install] Installing system packages via apt …")
             if not _has("az"):
                 _run(["apt-get", "install", "-y", "azure-cli"], check=False)
+            else:
+                print("  [ok] az already installed")
             if not _has("gcloud"):
                 _run(["apt-get", "install", "-y", "google-cloud-sdk"], check=False)
+            else:
+                print("  [ok] gcloud already installed")
         elif shutil.which("dnf"):
             if not _has("az"):
                 _run(["dnf", "install", "-y", "azure-cli"], check=False)
+            else:
+                print("  [ok] az already installed")
             if not _has("gcloud"):
                 _run(["dnf", "install", "-y", "google-cloud-sdk"], check=False)
+            else:
+                print("  [ok] gcloud already installed")
     elif sys.platform == "darwin":
         if shutil.which("brew"):
             print("[install] Installing system packages via brew …")
             if not _has("az"):
-                _run(["brew", "install", "azure-cli"], check=False)
+                if _brew_installed("azure-cli"):
+                    print("  [ok] azure-cli already installed")
+                else:
+                    _run(["brew", "install", "azure-cli"], check=False)
+            else:
+                print("  [ok] az already installed")
             if not _has("gcloud"):
-                _run(["brew", "install", "--cask", "google-cloud-sdk"], check=False)
+                if _brew_cask_installed("google-cloud-sdk"):
+                    print("  [ok] google-cloud-sdk already installed")
+                else:
+                    _run(["brew", "install", "--cask", "google-cloud-sdk"], check=False)
+            else:
+                print("  [ok] gcloud already installed")
     elif sys.platform == "win32":
         if shutil.which("choco"):
             if not _has("az"):
                 _run(["choco", "install", "-y", "azure-cli"], check=False)
+            else:
+                print("  [ok] az already installed")
             if not _has("gcloud"):
                 _run(["choco", "install", "-y", "gcloudsdk"], check=False)
+            else:
+                print("  [ok] gcloud already installed")
 
 
 def install_pip_deps():
+    import importlib.util
+    from pathlib import Path
+    req = Path(__file__).parent / "requirements.txt"
+    if not req.exists():
+        print("[install] No requirements.txt found — skipping pip install")
+        return
     print("[install] Installing Python packages …")
-    _run([sys.executable, "-m", "pip", "install",
-          "--break-system-packages", "-r", "requirements.txt"], check=False)
+
+    def _pip_installed(pkg_spec):
+        name = pkg_spec.split(">=")[0].split("==")[0].split("[")[0].split("<")[0].strip()
+        _IMPORT_MAP = {
+            "python-nmap": "nmap", "beautifulsoup4": "bs4", "python-docx": "docx",
+            "python-whois": "whois", "Pillow": "PIL", "pyOpenSSL": "OpenSSL",
+            "dnspython": "dns", "pyyaml": "yaml", "scikit-learn": "sklearn",
+            "python-dateutil": "dateutil", "python-magic": "magic",
+            "flask-socketio": "flask_socketio", "flask-cors": "flask_cors",
+            "python-engineio": "engineio", "python-socketio": "socketio",
+            "charset-normalizer": "charset_normalizer",
+            "ruamel.yaml": "ruamel", "lxml-html-clean": "lxml_html_clean",
+            "pyserial": "serial", "python-can": "can",
+            "python-multipart": "multipart", "graphql-core": "graphql",
+        }
+        mod = _IMPORT_MAP.get(name, name.replace("-", "_"))
+        return importlib.util.find_spec(mod) is not None
+
+    lines = req.read_text().splitlines()
+    missing = []
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if _pip_installed(line):
+            print(f"  [ok] {line} already installed")
+        else:
+            missing.append(line)
+    if missing:
+        _run([sys.executable, "-m", "pip", "install",
+              "--break-system-packages"] + missing, check=False)
+    else:
+        print("  [+] All Python packages already installed.")
 
 
 def main():
