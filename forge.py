@@ -46,15 +46,26 @@ try:
 except ImportError:
     _el = None
 
+try:
+    from pr0t31n_pause import PauseManager as _PP
+except ImportError:
+    _PP = None
+
 _MANAGED = os.environ.get("FORGE_MANAGED", "") == "1"
 _findings: list = []
 
 _RUN_DIR: Optional[Path] = None
 _RUNLOG = None
+_pause = None
 
 _CSV_FIELDS = ["id", "tool", "title", "datetime", "ip", "port", "hostname",
                "risk", "command", "description", "output_file", "affected",
                "cves", "service", "catalogue_id", "remediation", "sources"]
+
+
+def _check_pause():
+    if _pause is not None and _pause.check_and_pause():
+        sys.exit(42)
 
 
 def _rel(p) -> str:
@@ -132,9 +143,24 @@ def finding(*, title: str, severity: str, description: str, ip: str = "",
     _tok("__VANTAGE_FINDING__", json.dumps(rec))
 
 
+def _save_checkpoint():
+    if _RUN_DIR is None:
+        return
+    try:
+        cp = {
+            "findings_count": len(_findings),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        (_RUN_DIR / "checkpoint.json").write_text(
+            json.dumps(cp, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
 # ── Azure auditor ─────────────────────────────────────────────────────────────
 
 def audit_azure(subscription_id: str, output_dir: Path) -> None:
+    _check_pause()
     status("azure", "Azure Subscription Audit", "running")
     az = shutil.which("az")
     if not az:
@@ -166,7 +192,9 @@ def audit_azure(subscription_id: str, output_dir: Path) -> None:
             err(f"az {args[0] if args else '?'} failed: {exc}")
             return None
 
+    _save_checkpoint()
     accounts = _az_run(["storage", "account", "list"], "storage_accounts.json") or []
+    _check_pause()
     for acct in accounts:
         name = acct.get("name", "")
         rg   = acct.get("resourceGroup", "")
@@ -189,7 +217,10 @@ def audit_azure(subscription_id: str, output_dir: Path) -> None:
                            "affected": f"{rg}/{name}"},
                      output_file=str(out_dir / "storage_accounts.json"))
 
+    _check_pause()
+    _save_checkpoint()
     vaults = _az_run(["keyvault", "list"], "keyvaults.json") or []
+    _check_pause()
     for kv in vaults:
         name = kv.get("name", "")
         props = kv.get("properties") or {}
@@ -206,7 +237,10 @@ def audit_azure(subscription_id: str, output_dir: Path) -> None:
                      data={"catalogue_id": "FORGE-AZ-011", "affected": name},
                      output_file=str(out_dir / "keyvaults.json"))
 
+    _check_pause()
+    _save_checkpoint()
     vms = _az_run(["vm", "list"], "vms.json") or []
+    _check_pause()
     for vm in vms:
         name = vm.get("name", "")
         rg   = vm.get("resourceGroup", "")
@@ -225,6 +259,7 @@ def audit_azure(subscription_id: str, output_dir: Path) -> None:
 # ── GCP auditor ───────────────────────────────────────────────────────────────
 
 def audit_gcp(project_id: str, output_dir: Path) -> None:
+    _check_pause()
     status("gcp", "GCP Project Audit", "running")
     gcloud = shutil.which("gcloud")
     if not gcloud:
@@ -256,7 +291,9 @@ def audit_gcp(project_id: str, output_dir: Path) -> None:
             err(f"gcloud {' '.join(args[:2])} failed: {exc}")
             return None
 
+    _save_checkpoint()
     buckets = _g_run(["storage", "buckets", "list"], "buckets.json") or []
+    _check_pause()
     for b in buckets:
         name = b.get("name", "")
         iam_cfg = (b.get("iamConfiguration") or {}).get("uniformBucketLevelAccess") or {}
@@ -267,8 +304,12 @@ def audit_gcp(project_id: str, output_dir: Path) -> None:
                      data={"catalogue_id": "FORGE-GCP-001", "affected": name},
                      output_file=str(out_dir / "buckets.json"))
 
+    _check_pause()
+    _save_checkpoint()
     instances = _g_run(["compute", "instances", "list"], "instances.json") or []
+    _check_pause()
     for inst in instances:
+        _check_pause()
         name = inst.get("name", "")
         sas  = inst.get("serviceAccounts") or []
         for sa in sas:
@@ -290,7 +331,10 @@ def audit_gcp(project_id: str, output_dir: Path) -> None:
                                "affected": name},
                          output_file=str(out_dir / "instances.json"))
 
+    _check_pause()
+    _save_checkpoint()
     iam = _g_run(["projects", "get-iam-policy", project_id], "iam_policy.json") or {}
+    _check_pause()
     for binding in iam.get("bindings", []) or []:
         role = binding.get("role", "")
         if role in ("roles/owner", "roles/editor"):
@@ -311,6 +355,7 @@ def audit_gcp(project_id: str, output_dir: Path) -> None:
 # ── AWS auditor ───────────────────────────────────────────────────────────────
 
 def audit_aws(profile: str, region: str, output_dir: Path) -> None:
+    _check_pause()
     status("aws", "AWS Account Audit", "running")
     aws = shutil.which("aws")
     if not aws:
@@ -347,10 +392,14 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
             return None
 
     # ── S3 ────────────────────────────────────────────────────────────────────
+    _check_pause()
+    _save_checkpoint()
     status("aws", "S3 bucket audit", "running")
     buckets_resp = _aws_run(["s3api", "list-buckets"], "s3_buckets.json", use_region=False) or {}
     buckets = buckets_resp.get("Buckets") or []
+    _check_pause()
     for bucket in buckets:
+        _check_pause()
         name = bucket.get("Name", "")
 
         pab = _aws_run(["s3api", "get-public-access-block", "--bucket", name],
@@ -400,8 +449,11 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
                      output_file=str(out_dir / f"s3_{name}_logging.json"))
 
     # ── EC2 ───────────────────────────────────────────────────────────────────
+    _check_pause()
+    _save_checkpoint()
     status("aws", "EC2 instance audit", "running")
     instances_resp = _aws_run(["ec2", "describe-instances"], "ec2_instances.json") or {}
+    _check_pause()
     for reservation in instances_resp.get("Reservations") or []:
         for inst in reservation.get("Instances") or []:
             iid = inst.get("InstanceId", "")
@@ -418,7 +470,9 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
                          data={"catalogue_id": "FORGE-AWS-010", "affected": label},
                          output_file=str(out_dir / "ec2_instances.json"))
 
+    _check_pause()
     ebs_resp = _aws_run(["ec2", "describe-volumes"], "ec2_volumes.json") or {}
+    _check_pause()
     for vol in ebs_resp.get("Volumes") or []:
         vid = vol.get("VolumeId", "")
         if not vol.get("Encrypted"):
@@ -429,8 +483,10 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
                            "remediation": "Create an encrypted snapshot and replace the volume."},
                      output_file=str(out_dir / "ec2_volumes.json"))
 
+    _check_pause()
     sgs_resp = _aws_run(["ec2", "describe-security-groups"], "ec2_security_groups.json") or {}
     sensitive_ports = {22, 3389, 3306, 5432, 1433, 27017, 6379, 9200}
+    _check_pause()
     for sg in sgs_resp.get("SecurityGroups") or []:
         sg_id = sg.get("GroupId", "")
         sg_name = sg.get("GroupName", "")
@@ -458,9 +514,13 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
                                  output_file=str(out_dir / "ec2_security_groups.json"))
 
     # ── IAM ───────────────────────────────────────────────────────────────────
+    _check_pause()
+    _save_checkpoint()
     status("aws", "IAM audit", "running")
     users_resp = _aws_run(["iam", "list-users"], "iam_users.json", use_region=False) or {}
+    _check_pause()
     for user in users_resp.get("Users") or []:
+        _check_pause()
         uname = user.get("UserName", "")
 
         mfa_resp = _aws_run(["iam", "list-mfa-devices", "--user-name", uname],
@@ -500,6 +560,7 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
                 except Exception:
                     pass
 
+    _check_pause()
     cred_report = _aws_run(["iam", "generate-credential-report"], "iam_cred_gen.json", use_region=False)
     cred_data = _aws_run(["iam", "get-credential-report"], "iam_cred_report.json", use_region=False) or {}
     if cred_data.get("Content"):
@@ -520,8 +581,11 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
             pass
 
     # ── RDS ───────────────────────────────────────────────────────────────────
+    _check_pause()
+    _save_checkpoint()
     status("aws", "RDS audit", "running")
     rds_resp = _aws_run(["rds", "describe-db-instances"], "rds_instances.json") or {}
+    _check_pause()
     for db in rds_resp.get("DBInstances") or []:
         db_id = db.get("DBInstanceIdentifier", "")
 
@@ -549,6 +613,8 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
                      output_file=str(out_dir / "rds_instances.json"))
 
     # ── CloudTrail ────────────────────────────────────────────────────────────
+    _check_pause()
+    _save_checkpoint()
     status("aws", "CloudTrail audit", "running")
     trails_resp = _aws_run(["cloudtrail", "describe-trails"], "cloudtrail_trails.json") or {}
     trails = trails_resp.get("trailList") or []
@@ -560,6 +626,7 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
                        "remediation": "Create a multi-region trail logging to a dedicated S3 bucket."},
                  output_file=str(out_dir / "cloudtrail_trails.json"))
     else:
+        _check_pause()
         for trail in trails:
             trail_name = trail.get("Name", "")
             trail_status = _aws_run(["cloudtrail", "get-trail-status", "--name", trail_name],
@@ -573,9 +640,13 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
                          output_file=str(out_dir / f"cloudtrail_{trail_name}_status.json"))
 
     # ── KMS ───────────────────────────────────────────────────────────────────
+    _check_pause()
+    _save_checkpoint()
     status("aws", "KMS audit", "running")
     keys_resp = _aws_run(["kms", "list-keys"], "kms_keys.json") or {}
+    _check_pause()
     for key in keys_resp.get("Keys") or []:
+        _check_pause()
         key_id = key.get("KeyId", "")
         key_detail = _aws_run(["kms", "describe-key", "--key-id", key_id],
                                 f"kms_{key_id[:8]}_detail.json") or {}
@@ -619,6 +690,8 @@ def _write_findings_csv(path: Path, findings: list) -> None:
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main() -> int:
+    global _pause
+
     parser = argparse.ArgumentParser(
         prog="forge",
         description="Forge — AWS / Azure / GCP cloud control-plane security auditor"
@@ -662,6 +735,13 @@ def main() -> int:
         except Exception:
             _RUNLOG = None
 
+    if _PP is not None:
+        _pause = _PP(project_dir, "forge")
+        _pause.start_watcher(
+            checkpoint_callback=_save_checkpoint,
+            grace_period=30,
+        )
+
     target_desc = args.azure_subscription or args.gcp_project or args.aws_profile or "aws-default"
     log(f"Forge v{VERSION} starting — project: {project_dir}")
     if _us is not None:
@@ -674,10 +754,13 @@ def main() -> int:
 
     started_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
+    _check_pause()
     if args.azure_subscription:
         audit_azure(args.azure_subscription, project_dir)
+    _check_pause()
     if args.gcp_project:
         audit_gcp(args.gcp_project, project_dir)
+    _check_pause()
     if has_aws or (not args.azure_subscription and not args.gcp_project):
         audit_aws(args.aws_profile, args.aws_region, project_dir)
 
@@ -702,6 +785,8 @@ def main() -> int:
             json.dumps(_findings, indent=2), encoding="utf-8")
         _write_findings_csv(project_dir / "findings.csv", _findings)
 
+    if _pause is not None:
+        _pause.write_stop_reason("completed", "all_phases_done")
     log(f"Forge complete — {len(_findings)} finding(s) — output: {project_dir}")
     return 0
 
