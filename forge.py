@@ -3,12 +3,12 @@
 Forge — AWS / Azure / GCP cloud control-plane security auditor.
 
 Token protocol (emitted on stdout for Crucible-style managers):
-  __VANTAGE_LOG__     <message>
-  __VANTAGE_ERR__     <message>
-  __VANTAGE_STATUS__  <json>
-  __VANTAGE_FINDING__ <json>
+  __CRUCIBLE_LOG__     <message>
+  __CRUCIBLE_ERR__     <message>
+  __CRUCIBLE_STATUS__  <json>
+  __CRUCIBLE_FINDING__ <json>
 
-Run direct (CLI) or under a Flask manager that sets FORGE_MANAGED=1
+Run direct (CLI) or under a Flask manager that sets CRUCIBLE_MANAGED=1
 to switch outputs to token mode.
 """
 from __future__ import annotations
@@ -51,7 +51,7 @@ try:
 except ImportError:
     _PP = None
 
-_MANAGED = os.environ.get("FORGE_MANAGED", "") == "1"
+_MANAGED = os.environ.get("CRUCIBLE_MANAGED", "") == "1"
 _findings: list = []
 
 _RUN_DIR: Optional[Path] = None
@@ -94,14 +94,14 @@ def _tok(token: str, msg: str) -> None:
 
 
 def log(msg: str) -> None:
-    _tok("__VANTAGE_LOG__", msg)
+    _tok("__CRUCIBLE_LOG__", msg)
     if _RUNLOG is not None:
         try: _RUNLOG.info(msg)
         except Exception: pass
 
 
 def err(msg: str) -> None:
-    _tok("__VANTAGE_ERR__", msg)
+    _tok("__CRUCIBLE_ERR__", msg)
     if _RUNLOG is not None:
         try: _RUNLOG.error(msg)
         except Exception: pass
@@ -109,7 +109,7 @@ def err(msg: str) -> None:
 
 def status(phase: str, label: str, state: str, step: str = "") -> None:
     rec = {"phase": phase, "label": label, "state": state, "step": step}
-    _tok("__VANTAGE_STATUS__", json.dumps(rec))
+    _tok("__CRUCIBLE_STATUS__", json.dumps(rec))
 
 
 def finding(*, title: str, severity: str, description: str, ip: str = "",
@@ -145,7 +145,7 @@ def finding(*, title: str, severity: str, description: str, ip: str = "",
             "data": data or {},
         }
     _findings.append(rec)
-    _tok("__VANTAGE_FINDING__", json.dumps(rec))
+    _tok("__CRUCIBLE_FINDING__", json.dumps(rec))
 
 
 def _save_checkpoint():
