@@ -921,6 +921,15 @@ def main() -> int:
                               engagement_name=args.engagement_name,
                               target=target_desc)
         _us.write_meta(project_dir, meta)
+        try:
+            import pr0t31n_dep_snapshot as _ds
+            _ds.write_snapshot(
+                project_dir, "forge", VERSION,
+                binaries=["aws", "az", "gcloud"],
+                pip_packages=[],
+            )
+        except Exception:
+            pass
 
     started_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 

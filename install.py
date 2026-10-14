@@ -41,11 +41,13 @@ def install_system_deps():
         if shutil.which("apt-get"):
             print("[install] Installing system packages via apt …")
             if not _has("az"):
-                _run(["apt-get", "install", "-y", "azure-cli"], check=False)
+                if not _dpkg_installed("azure-cli"):
+                    _run(["apt-get", "install", "-y", "azure-cli"], check=False)
             else:
                 print("  [ok] az already installed")
             if not _has("gcloud"):
-                _run(["apt-get", "install", "-y", "google-cloud-sdk"], check=False)
+                if not _dpkg_installed("google-cloud-sdk"):
+                    _run(["apt-get", "install", "-y", "google-cloud-sdk"], check=False)
             else:
                 print("  [ok] gcloud already installed")
         elif shutil.which("dnf"):
@@ -94,6 +96,26 @@ def install_pip_deps():
         print("[install] No requirements.txt found — skipping pip install")
         return
     print("[install] Installing Python packages …")
+
+
+def _dpkg_installed(pkg):
+    try:
+        r = subprocess.run(["dpkg", "-s", pkg],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return r.returncode == 0
+    except FileNotFoundError:
+        return False
+
+
+def _rpm_installed(pkg):
+    try:
+        return subprocess.run(
+            ["rpm", "-q", pkg],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        ).returncode == 0
+    except FileNotFoundError:
+        return False
+
 
     def _pip_installed(pkg_spec):
         name = pkg_spec.split(">=")[0].split("==")[0].split("[")[0].split("<")[0].strip()
