@@ -4,13 +4,19 @@
   "entries": [
     {
       "id": "FORGE-AZ-001",
-      "title": "Azure Storage Account allows HTTP: {name}",
-      "aliases": ["Azure Storage HTTPS-only disabled"],
-      "source_tools": ["forge"],
+      "title": "Azure Storage: Azure Storage Account allows HTTP: {name}",
+      "aliases": [
+        "Azure Storage HTTPS-only disabled"
+      ],
+      "source_tools": [
+        "forge"
+      ],
       "risk": "HIGH",
       "description": "Azure storage account does not enforce HTTPS-only. Data in transit may traverse plaintext.",
       "impact": "Attackers on-path can intercept blob/queue/file data and Shared Access Signatures. SAS tokens captured this way grant persistent access until their expiry.",
-      "cwe": ["CWE-319"],
+      "cwe": [
+        "CWE-319"
+      ],
       "cve_examples": [],
       "cvss_v3_base": 7.4,
       "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:L/A:N",
@@ -18,16 +24,37 @@
       "qualys_qids": [],
       "owasp_web": "A02:2021 Cryptographic Failures",
       "owasp_api": "",
-      "nist_csf2": ["PR.DS-2"],
-      "nist_800_53": ["SC-8", "SC-23"],
-      "nist_800_171": ["3.13.8"],
-      "pci_dss_4": ["4.2.1"],
-      "iso_27001": ["A.8.20"],
-      "iso_27002": ["8.20"],
-      "soc2": ["CC6.7"],
+      "nist_csf2": [
+        "PR.DS-2"
+      ],
+      "nist_800_53": [
+        "SC-8",
+        "SC-23"
+      ],
+      "nist_800_171": [
+        "3.13.8"
+      ],
+      "pci_dss_4": [
+        "4.2.1"
+      ],
+      "iso_27001": [
+        "A.8.20"
+      ],
+      "iso_27002": [
+        "8.20"
+      ],
+      "soc2": [
+        "CC6.7"
+      ],
       "hitrust": [],
       "gdpr": [],
-      "mitre_attack": [{"technique": "T1040", "tactic": "Credential Access", "name": "Network Sniffing"}],
+      "mitre_attack": [
+        {
+          "technique": "T1040",
+          "tactic": "Credential Access",
+          "name": "Network Sniffing"
+        }
+      ],
       "searchsploit_terms": [],
       "metasploit_modules": [],
       "kev": false,
@@ -35,17 +62,24 @@
       "remediation_component": "Configuration",
       "remediation_category": "Cryptography",
       "remediation_effort": "Easy",
-      "validation_tools": ["az", "forge"]
+      "validation_tools": [
+        "az",
+        "forge"
+      ]
     },
     {
       "id": "FORGE-AZ-002",
-      "title": "Azure Storage Account publicly accessible: {name}",
+      "title": "Azure Storage: Azure Storage Account publicly accessible: {name}",
       "aliases": [],
-      "source_tools": ["forge"],
+      "source_tools": [
+        "forge"
+      ],
       "risk": "HIGH",
       "description": "Storage account network ACL defaults to Allow with no IP restrictions configured.",
       "impact": "Blob endpoints are reachable from the entire internet. Authentication still applies, but any leaked SAS, key, or AD token is immediately exploitable from any source.",
-      "cwe": ["CWE-284"],
+      "cwe": [
+        "CWE-284"
+      ],
       "cvss_v3_base": 6.5,
       "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
       "owasp_web": "A01:2021 Broken Access Control",
@@ -53,16 +87,23 @@
       "remediation_component": "Configuration",
       "remediation_category": "Access Control",
       "remediation_effort": "Easy",
-      "validation_tools": ["az", "forge"]
+      "validation_tools": [
+        "az",
+        "forge"
+      ]
     },
     {
       "id": "FORGE-AZ-010",
-      "title": "Azure Key Vault soft-delete disabled: {name}",
-      "source_tools": ["forge"],
+      "title": "Azure Key Vault: Azure Key Vault soft-delete disabled: {name}",
+      "source_tools": [
+        "forge"
+      ],
       "risk": "MEDIUM",
       "description": "Soft-delete is not enabled on this Key Vault — accidental deletions cannot be recovered within the retention window.",
       "impact": "An attacker (or careless operator) who deletes a key, secret, or certificate causes permanent loss; downstream applications that depend on the material break and cannot be restored.",
-      "cwe": ["CWE-693"],
+      "cwe": [
+        "CWE-693"
+      ],
       "cvss_v3_base": 5.3,
       "remediation_brief": "az keyvault update --name <kv> --enable-soft-delete true",
       "remediation_effort": "Easy",
@@ -71,12 +112,16 @@
     },
     {
       "id": "FORGE-AZ-011",
-      "title": "Azure Key Vault purge-protection disabled: {name}",
-      "source_tools": ["forge"],
+      "title": "Azure Key Vault: Azure Key Vault purge-protection disabled: {name}",
+      "source_tools": [
+        "forge"
+      ],
       "risk": "MEDIUM",
       "description": "Purge-protection is disabled — soft-deleted keys / secrets can be immediately purged by an attacker with delete permission.",
       "impact": "Attacker with Contributor or Key Vault Contributor can soft-delete then immediately purge, bypassing the soft-delete grace window and destroying evidence.",
-      "cwe": ["CWE-693"],
+      "cwe": [
+        "CWE-693"
+      ],
       "cvss_v3_base": 5.3,
       "remediation_brief": "az keyvault update --name <kv> --enable-purge-protection true",
       "remediation_effort": "Easy",
@@ -85,12 +130,16 @@
     },
     {
       "id": "FORGE-AZ-020",
-      "title": "Azure VM OS disk unencrypted: {name}",
-      "source_tools": ["forge"],
+      "title": "Azure VM: Azure VM OS disk unencrypted: {name}",
+      "source_tools": [
+        "forge"
+      ],
       "risk": "HIGH",
       "description": "Azure Disk Encryption is disabled on the OS disk.",
       "impact": "If the underlying VHD is exfiltrated (snapshot abuse, storage-account compromise), the OS volume can be mounted offline and credentials, keys, and data extracted.",
-      "cwe": ["CWE-311"],
+      "cwe": [
+        "CWE-311"
+      ],
       "cvss_v3_base": 6.2,
       "remediation_brief": "az vm encryption enable --resource-group <rg> --name <vm> --disk-encryption-keyvault <kv-id>",
       "remediation_effort": "Moderate",
@@ -99,12 +148,16 @@
     },
     {
       "id": "FORGE-GCP-001",
-      "title": "GCS bucket uniform access disabled: {name}",
-      "source_tools": ["forge"],
+      "title": "GCS: GCS bucket uniform access disabled: {name}",
+      "source_tools": [
+        "forge"
+      ],
       "risk": "MEDIUM",
       "description": "Uniform bucket-level access is disabled; legacy per-object ACLs are in effect.",
       "impact": "Object ACLs can grant unintended public-read or all-authenticated-users access bypassing IAM policy. Inventory of object ACLs is hard to audit at scale.",
-      "cwe": ["CWE-732"],
+      "cwe": [
+        "CWE-732"
+      ],
       "cvss_v3_base": 5.3,
       "remediation_brief": "gcloud storage buckets update gs://<bucket> --uniform-bucket-level-access",
       "remediation_effort": "Easy",
@@ -113,12 +166,16 @@
     },
     {
       "id": "FORGE-GCP-010",
-      "title": "GCE instance uses default service account: {name}",
-      "source_tools": ["forge"],
+      "title": "GCE: GCE instance uses default service account: {name}",
+      "source_tools": [
+        "forge"
+      ],
       "risk": "MEDIUM",
       "description": "Compute instance is attached to the default Compute Engine service account.",
       "impact": "Default SA is granted Editor by default in legacy projects and supplies broad scopes (cloud-platform). Workload compromise becomes project-wide compromise.",
-      "cwe": ["CWE-250"],
+      "cwe": [
+        "CWE-250"
+      ],
       "cvss_v3_base": 5.5,
       "remediation_brief": "Create a least-privilege custom SA and re-attach: gcloud compute instances set-service-account.",
       "remediation_effort": "Moderate",
@@ -127,8 +184,10 @@
     },
     {
       "id": "FORGE-GCP-011",
-      "title": "GCE instance has public IP: {name}",
-      "source_tools": ["forge"],
+      "title": "GCE: GCE instance has public IP: {name}",
+      "source_tools": [
+        "forge"
+      ],
       "risk": "INFO",
       "description": "Compute instance has an external IP configured.",
       "impact": "Direct internet exposure increases attack surface; ensure firewall rules and IAP/Cloud Armor are in place. INFO unless the workload has no internet-egress requirement.",
@@ -139,12 +198,16 @@
     },
     {
       "id": "FORGE-GCP-020",
-      "title": "GCP project-level {role} granted to {member}",
-      "source_tools": ["forge"],
+      "title": "GCP: GCP project-level {role} granted to {member}",
+      "source_tools": [
+        "forge"
+      ],
       "risk": "MEDIUM",
       "description": "Project-level owner or editor role granted to a user / service account.",
       "impact": "Owner/editor at project scope can disable logging, modify any resource, and pivot to other resources. Lateral movement is trivial within the project boundary.",
-      "cwe": ["CWE-250"],
+      "cwe": [
+        "CWE-250"
+      ],
       "cvss_v3_base": 6.5,
       "remediation_brief": "Replace with narrower predefined or custom roles scoped to specific resources.",
       "remediation_effort": "Moderate",

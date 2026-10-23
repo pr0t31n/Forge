@@ -211,7 +211,7 @@ def audit_azure(subscription_id: str, output_dir: Path) -> None:
         log(f"[azure] Checking storage account {name} (rg={rg})...")
         if acct.get("enableHttpsTrafficOnly") is False:
             log(f"[azure] {name} — HTTPS-only disabled (HIGH)")
-            finding(title=f"Azure Storage Account allows HTTP: {name}",
+            finding(title=f"Azure Storage: Azure Storage Account allows HTTP: {name}",
                      severity="HIGH",
                      description=("Storage account does not enforce HTTPS-only. "
                                    "Data in transit may traverse plaintext."),
@@ -224,7 +224,7 @@ def audit_azure(subscription_id: str, output_dir: Path) -> None:
         net_acl = (acct.get("networkRuleSet") or {}).get("defaultAction", "")
         if net_acl == "Allow":
             log(f"[azure] {name} — network ACL defaults to Allow (HIGH)")
-            finding(title=f"Azure Storage Account publicly accessible: {name}",
+            finding(title=f"Azure Storage: Azure Storage Account publicly accessible: {name}",
                      severity="HIGH",
                      description=("Storage account network ACL defaults to Allow "
                                    "(no IP restrictions configured)."),
@@ -246,14 +246,14 @@ def audit_azure(subscription_id: str, output_dir: Path) -> None:
         log(f"[azure] Checking key vault {name}...")
         if not props.get("enableSoftDelete", True):
             log(f"[azure] {name} — soft-delete disabled (MEDIUM)")
-            finding(title=f"Azure Key Vault soft-delete disabled: {name}",
+            finding(title=f"Azure Key Vault: Azure Key Vault soft-delete disabled: {name}",
                      severity="MEDIUM",
                      description="Soft-delete not enabled — accidental deletions are unrecoverable.",
                      data={"catalogue_id": "FORGE-AZ-010", "affected": name},
                      output_file=str(out_dir / "keyvaults.json"))
         if not props.get("enablePurgeProtection"):
             log(f"[azure] {name} — purge-protection disabled (MEDIUM)")
-            finding(title=f"Azure Key Vault purge-protection disabled: {name}",
+            finding(title=f"Azure Key Vault: Azure Key Vault purge-protection disabled: {name}",
                      severity="MEDIUM",
                      description="Purge-protection disabled — soft-deleted keys can be purged immediately.",
                      data={"catalogue_id": "FORGE-AZ-011", "affected": name},
@@ -275,7 +275,7 @@ def audit_azure(subscription_id: str, output_dir: Path) -> None:
         enc  = (sd.get("encryptionSettings") or {}).get("enabled") if sd else None
         if enc is False:
             log(f"[azure] {name} — OS disk unencrypted (HIGH)")
-            finding(title=f"Azure VM OS disk unencrypted: {name}",
+            finding(title=f"Azure VM: Azure VM OS disk unencrypted: {name}",
                      severity="HIGH",
                      description="Azure Disk Encryption (ADE) is disabled on the OS disk.",
                      data={"catalogue_id": "FORGE-AZ-020", "affected": f"{rg}/{name}"},
@@ -336,7 +336,7 @@ def audit_gcp(project_id: str, output_dir: Path) -> None:
         iam_cfg = (b.get("iamConfiguration") or {}).get("uniformBucketLevelAccess") or {}
         if not iam_cfg.get("enabled"):
             log(f"[gcp] {name} — uniform access disabled (MEDIUM)")
-            finding(title=f"GCS bucket uniform access disabled: {name}",
+            finding(title=f"GCS: GCS bucket uniform access disabled: {name}",
                      severity="MEDIUM",
                      description="Uniform bucket-level access disabled — legacy ACLs may grant unintended access.",
                      data={"catalogue_id": "FORGE-GCP-001", "affected": name},
@@ -359,7 +359,7 @@ def audit_gcp(project_id: str, output_dir: Path) -> None:
             email = sa.get("email", "")
             if "compute@developer.gserviceaccount.com" in email:
                 log(f"[gcp] {name} — uses default service account {email} (MEDIUM)")
-                finding(title=f"GCE instance uses default service account: {name}",
+                finding(title=f"GCE: GCE instance uses default service account: {name}",
                          severity="MEDIUM",
                          description="Default Compute Engine service account grants over-broad scopes.",
                          data={"catalogue_id": "FORGE-GCP-010",
@@ -369,7 +369,7 @@ def audit_gcp(project_id: str, output_dir: Path) -> None:
         for iface in inst.get("networkInterfaces", []):
             if iface.get("accessConfigs"):
                 log(f"[gcp] {name} — has external IP (INFO)")
-                finding(title=f"GCE instance has public IP: {name}",
+                finding(title=f"GCE: GCE instance has public IP: {name}",
                          severity="INFO",
                          description="Instance has an ephemeral or static external IP configured.",
                          data={"catalogue_id": "FORGE-GCP-011",
@@ -390,7 +390,7 @@ def audit_gcp(project_id: str, output_dir: Path) -> None:
                 if member.startswith("user:") or member.startswith("serviceAccount:"):
                     sev = "HIGH" if role == "roles/owner" else "MEDIUM"
                     log(f"[gcp] {member} — project-level {role} ({sev})")
-                    finding(title=f"GCP project-level {role} granted to {member}",
+                    finding(title=f"GCP: GCP project-level {role} granted to {member}",
                              severity=sev,
                              description=("Over-privileged role granted at project level. "
                                            "Prefer per-resource or custom roles."),
