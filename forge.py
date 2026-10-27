@@ -14,6 +14,7 @@ to switch outputs to token mode.
 from __future__ import annotations
 
 import argparse
+import base64
 import csv
 import json
 import os
@@ -61,6 +62,23 @@ _pause = None
 _CSV_FIELDS = ["id", "tool", "title", "datetime", "ip", "port", "hostname",
                "risk", "command", "description", "output_file", "affected",
                "cves", "service", "catalogue_id", "remediation", "sources"]
+
+# Secret-like environment variable / user-data pattern — shared across Lambda,
+# ECS, and EC2 user-data checks.
+_SECRET_PATTERNS = re.compile(
+    r'(password|secret|key|token|aws_access_key|aws_secret|private_key|'
+    r'api_key|apikey|db_password|mysql_password|postgres_password)',
+    re.IGNORECASE,
+)
+
+# Deprecated Lambda runtimes (no longer receive security patches).
+_DEPRECATED_RUNTIMES = frozenset({
+    "python2.7", "python3.6", "python3.7",
+    "nodejs10.x", "nodejs12.x", "nodejs14.x", "nodejs16.x",
+    "dotnetcore2.1", "dotnetcore3.1",
+    "ruby2.5", "ruby2.7",
+    "java8", "go1.x",
+})
 
 
 def _check_pause():
@@ -495,6 +513,18 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
         else:
             log(f"[aws] {name} — versioning enabled")
 
+        # S3 deep: MFA Delete (FORGE-AWS-007)
+        if versioning.get("MFADelete") != "Enabled":
+            log(f"[aws] {name} — MFA Delete not enabled (MEDIUM)")
+            finding(title=f"S3 bucket MFA Delete not enabled: {name}",
+                     severity="MEDIUM",
+                     description="MFA Delete is not enabled — versioned objects can be permanently deleted without MFA.",
+                     data={"catalogue_id": "FORGE-AWS-007", "affected": name,
+                           "remediation": "Enable MFA Delete via aws s3api put-bucket-versioning with MFA device."},
+                     output_file=str(out_dir / f"s3_{name}_versioning.json"))
+        else:
+            log(f"[aws] {name} — MFA Delete enabled")
+
         log(f"[aws] {name} — checking encryption...")
         enc = _aws_run(["s3api", "get-bucket-encryption", "--bucket", name],
                         f"s3_{name}_encryption.json", use_region=False)
@@ -521,6 +551,22 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
                      output_file=str(out_dir / f"s3_{name}_logging.json"))
         else:
             log(f"[aws] {name} — access logging enabled")
+
+        # S3 deep: bucket policy public status (FORGE-AWS-006)
+        log(f"[aws] {name} — checking bucket policy public status...")
+        pol_status = _aws_run(["s3api", "get-bucket-policy-status", "--bucket", name],
+                               f"s3_{name}_policy_status.json", use_region=False) or {}
+        ps = pol_status.get("PolicyStatus") or {}
+        if ps.get("IsPublic") is True:
+            log(f"[aws] {name} — bucket policy is PUBLIC (CRITICAL)")
+            finding(title=f"S3 bucket policy is public: {name}",
+                     severity="CRITICAL",
+                     description="The S3 bucket policy evaluates as public — objects may be accessible to anyone on the internet.",
+                     data={"catalogue_id": "FORGE-AWS-006", "affected": name,
+                           "remediation": "Review and restrict the bucket policy. Enable S3 Block Public Access."},
+                     output_file=str(out_dir / f"s3_{name}_policy_status.json"))
+        else:
+            log(f"[aws] {name} — bucket policy not public")
     log(f"[aws] S3 audit complete — checked {len(buckets)} bucket(s)")
 
     # ── EC2 ───────────────────────────────────────────────────────────────────
@@ -552,6 +598,48 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
                          output_file=str(out_dir / "ec2_instances.json"))
             else:
                 log(f"[aws] {label} — no public IP")
+
+            # EC2 deep: IMDSv2 check (FORGE-AWS-014)
+            meta_opts = inst.get("MetadataOptions") or {}
+            if meta_opts.get("HttpTokens") != "required":
+                log(f"[aws] {label} — IMDSv2 not enforced (MEDIUM)")
+                finding(title=f"EC2 instance IMDSv2 not enforced: {label}",
+                         severity="MEDIUM",
+                         description=f"Instance {iid} does not require IMDSv2 (HttpTokens != required). "
+                                     "IMDSv1 is vulnerable to SSRF-based credential theft.",
+                         data={"catalogue_id": "FORGE-AWS-014", "affected": label,
+                               "remediation": "aws ec2 modify-instance-metadata-options --instance-id <id> --http-tokens required"},
+                         output_file=str(out_dir / "ec2_instances.json"))
+            else:
+                log(f"[aws] {label} — IMDSv2 enforced OK")
+
+            # EC2 deep: user data secrets (FORGE-AWS-016)
+            log(f"[aws] {label} — checking user data for secrets...")
+            ud_resp = _aws_run(["ec2", "describe-instance-attribute",
+                                "--attribute", "userData", "--instance-id", iid],
+                               f"ec2_{iid}_userdata.json")
+            ud_val = (ud_resp or {}).get("UserData", {}).get("Value", "") if ud_resp else ""
+            if ud_val:
+                try:
+                    ud_decoded = base64.b64decode(ud_val).decode("utf-8", errors="replace")
+                    secret_matches = _SECRET_PATTERNS.findall(ud_decoded)
+                    if secret_matches:
+                        matched_keys = sorted(set(m.lower() for m in secret_matches))
+                        log(f"[aws] {label} — user data contains secret-like patterns: {matched_keys} (CRITICAL)")
+                        finding(title=f"EC2 instance user data contains secrets: {label}",
+                                 severity="CRITICAL",
+                                 description=f"Instance {iid} user data contains secret-like environment variables or values "
+                                             f"matching patterns: {', '.join(matched_keys)}. Anyone with ec2:DescribeInstanceAttribute "
+                                             "can read these.",
+                                 data={"catalogue_id": "FORGE-AWS-016", "affected": label,
+                                       "remediation": "Move secrets to AWS Secrets Manager or SSM Parameter Store (SecureString)."},
+                                 output_file=str(out_dir / f"ec2_{iid}_userdata.json"))
+                    else:
+                        log(f"[aws] {label} — user data present but no secret patterns found")
+                except Exception:
+                    log(f"[aws] {label} — could not decode user data")
+            else:
+                log(f"[aws] {label} — no user data configured")
 
     _check_pause()
     log("[aws] Checking EBS volumes...")
@@ -683,7 +771,6 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
     cred_data = _aws_run(["iam", "get-credential-report"], "iam_cred_report.json", use_region=False) or {}
     if cred_data.get("Content"):
         log("[aws] Parsing credential report for root account keys...")
-        import base64
         try:
             csv_text = base64.b64decode(cred_data["Content"]).decode("utf-8")
             for line in csv_text.strip().split("\n")[1:]:
@@ -749,6 +836,30 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
                      output_file=str(out_dir / "rds_instances.json"))
         else:
             log(f"[aws] {db_id} — backup retention: {db.get('BackupRetentionPeriod')} day(s)")
+
+        # RDS deep: Deletion Protection (FORGE-AWS-033)
+        if not db.get("DeletionProtection"):
+            log(f"[aws] {db_id} — deletion protection disabled (MEDIUM)")
+            finding(title=f"RDS instance deletion protection disabled: {db_id}",
+                     severity="MEDIUM",
+                     description="Deletion protection is disabled — the database can be deleted without safeguard.",
+                     data={"catalogue_id": "FORGE-AWS-033", "affected": db_id,
+                           "remediation": "aws rds modify-db-instance --db-instance-identifier <id> --deletion-protection"},
+                     output_file=str(out_dir / "rds_instances.json"))
+        else:
+            log(f"[aws] {db_id} — deletion protection enabled")
+
+        # RDS deep: Multi-AZ (FORGE-AWS-034)
+        if not db.get("MultiAZ"):
+            log(f"[aws] {db_id} — Multi-AZ disabled (MEDIUM)")
+            finding(title=f"RDS instance not Multi-AZ: {db_id}",
+                     severity="MEDIUM",
+                     description="Multi-AZ deployment is not enabled — no standby replica for automatic failover.",
+                     data={"catalogue_id": "FORGE-AWS-034", "affected": db_id,
+                           "remediation": "aws rds modify-db-instance --db-instance-identifier <id> --multi-az"},
+                     output_file=str(out_dir / "rds_instances.json"))
+        else:
+            log(f"[aws] {db_id} — Multi-AZ enabled")
     log(f"[aws] RDS audit complete — checked {len(rds_instances)} instance(s)")
 
     # ── CloudTrail ────────────────────────────────────────────────────────────
@@ -784,6 +895,30 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
                          output_file=str(out_dir / f"cloudtrail_{trail_name}_status.json"))
             else:
                 log(f"[aws] {trail_name} — actively logging OK")
+
+            # CloudTrail deep: KMS encryption (FORGE-AWS-042)
+            if not trail.get("KmsKeyId"):
+                log(f"[aws] {trail_name} — not encrypted with KMS (MEDIUM)")
+                finding(title=f"CloudTrail not encrypted with KMS: {trail_name}",
+                         severity="MEDIUM",
+                         description=f"Trail {trail_name} log files are not encrypted with a customer-managed KMS key.",
+                         data={"catalogue_id": "FORGE-AWS-042", "affected": trail_name,
+                               "remediation": "aws cloudtrail update-trail --name <trail> --kms-key-id <key-arn>"},
+                         output_file=str(out_dir / "cloudtrail_trails.json"))
+            else:
+                log(f"[aws] {trail_name} — KMS encryption configured")
+
+            # CloudTrail deep: CloudWatch Logs integration (FORGE-AWS-043)
+            if not trail.get("CloudWatchLogsLogGroupArn"):
+                log(f"[aws] {trail_name} — not integrated with CloudWatch Logs (LOW)")
+                finding(title=f"CloudTrail not integrated with CloudWatch Logs: {trail_name}",
+                         severity="LOW",
+                         description=f"Trail {trail_name} does not deliver events to CloudWatch Logs for real-time alerting.",
+                         data={"catalogue_id": "FORGE-AWS-043", "affected": trail_name,
+                               "remediation": "Configure a CloudWatch Logs log group for the trail."},
+                         output_file=str(out_dir / "cloudtrail_trails.json"))
+            else:
+                log(f"[aws] {trail_name} — CloudWatch Logs integration OK")
     log(f"[aws] CloudTrail audit complete — {len(trails)} trail(s)")
 
     # ── KMS ───────────────────────────────────────────────────────────────────
@@ -822,6 +957,669 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
         else:
             log(f"[aws] KMS {key_id[:8]} — skipped (not customer-managed or not enabled)")
     log(f"[aws] KMS audit complete — checked {len(kms_keys)} key(s)")
+
+    # ── Lambda ────────────────────────────────────────────────────────────────
+    _check_pause()
+    _save_checkpoint()
+    log("[aws] Starting Lambda audit...")
+    status("aws", "Lambda audit", "running")
+    lambda_resp = _aws_run(["lambda", "list-functions"], "lambda_functions.json") or {}
+    lambda_fns = lambda_resp.get("Functions") or []
+    log(f"[aws] Found {len(lambda_fns)} Lambda function(s)")
+    _check_pause()
+    for fn in lambda_fns:
+        _check_pause()
+        fn_name = fn.get("FunctionName", "")
+        fn_arn = fn.get("FunctionArn", "")
+        log(f"[aws] Checking Lambda function {fn_name}...")
+
+        # FORGE-AWS-060: secrets in environment variables
+        env_vars = (fn.get("Environment") or {}).get("Variables") or {}
+        if env_vars:
+            secret_keys = [k for k in env_vars if _SECRET_PATTERNS.search(k)]
+            if secret_keys:
+                log(f"[aws] {fn_name} — environment contains secret-like keys: {secret_keys} (CRITICAL)")
+                finding(title=f"Lambda function environment contains secrets: {fn_name}",
+                         severity="CRITICAL",
+                         description=f"Lambda function {fn_name} has environment variables with secret-like names: "
+                                     f"{', '.join(secret_keys)}. These are visible to anyone with lambda:GetFunction.",
+                         data={"catalogue_id": "FORGE-AWS-060", "affected": fn_name,
+                               "remediation": "Move secrets to AWS Secrets Manager or SSM Parameter Store and reference them at runtime."},
+                         output_file=str(out_dir / "lambda_functions.json"))
+            else:
+                log(f"[aws] {fn_name} — environment variables OK (no secret patterns)")
+        else:
+            log(f"[aws] {fn_name} — no environment variables")
+
+        # FORGE-AWS-061: overly permissive resource policy (Principal=*)
+        log(f"[aws] {fn_name} — checking resource policy...")
+        policy_resp = _aws_run(["lambda", "get-policy", "--function-name", fn_name],
+                                f"lambda_{fn_name}_policy.json")
+        if policy_resp:
+            try:
+                pol_doc = json.loads(policy_resp.get("Policy", "{}"))
+                for stmt in pol_doc.get("Statement") or []:
+                    principal = stmt.get("Principal", "")
+                    condition = stmt.get("Condition") or {}
+                    if principal == "*" and not condition:
+                        log(f"[aws] {fn_name} — resource policy allows Principal=* without Condition (CRITICAL)")
+                        finding(title=f"Lambda function publicly invokable: {fn_name}",
+                                 severity="CRITICAL",
+                                 description=f"Lambda {fn_name} has a resource-based policy granting Principal=* "
+                                             "with no Condition — anyone can invoke this function.",
+                                 data={"catalogue_id": "FORGE-AWS-061", "affected": fn_name,
+                                       "remediation": "Restrict the Principal to specific accounts/services or add a Condition."},
+                                 output_file=str(out_dir / f"lambda_{fn_name}_policy.json"))
+                        break
+            except (json.JSONDecodeError, TypeError):
+                pass
+        else:
+            log(f"[aws] {fn_name} — no resource policy (OK)")
+
+        # FORGE-AWS-062: function URL with no auth
+        log(f"[aws] {fn_name} — checking function URL configs...")
+        url_resp = _aws_run(["lambda", "list-function-url-configs", "--function-name", fn_name],
+                             f"lambda_{fn_name}_urls.json") or {}
+        url_configs = url_resp.get("FunctionUrlConfigs") or []
+        for uc in url_configs:
+            if uc.get("AuthType") == "NONE":
+                furl = uc.get("FunctionUrl", "")
+                log(f"[aws] {fn_name} — function URL {furl} has AuthType=NONE (HIGH)")
+                finding(title=f"Lambda function URL without authentication: {fn_name}",
+                         severity="HIGH",
+                         description=f"Lambda {fn_name} has a function URL ({furl}) with AuthType=NONE — "
+                                     "anyone on the internet can invoke it without credentials.",
+                         data={"catalogue_id": "FORGE-AWS-062", "affected": fn_name,
+                               "remediation": "Set AuthType to AWS_IAM or add a CloudFront+WAF layer."},
+                         output_file=str(out_dir / f"lambda_{fn_name}_urls.json"))
+
+        # FORGE-AWS-063: deprecated runtime
+        runtime = fn.get("Runtime", "")
+        if runtime in _DEPRECATED_RUNTIMES:
+            log(f"[aws] {fn_name} — uses deprecated runtime {runtime} (MEDIUM)")
+            finding(title=f"Lambda function uses deprecated runtime: {fn_name} ({runtime})",
+                     severity="MEDIUM",
+                     description=f"Lambda {fn_name} runs on {runtime} which is deprecated and no longer receives security patches.",
+                     data={"catalogue_id": "FORGE-AWS-063", "affected": fn_name,
+                           "remediation": f"Upgrade the function runtime from {runtime} to the latest supported version."},
+                     output_file=str(out_dir / "lambda_functions.json"))
+        elif runtime:
+            log(f"[aws] {fn_name} — runtime {runtime} OK")
+    log(f"[aws] Lambda audit complete — checked {len(lambda_fns)} function(s)")
+
+    # ── VPC deep ──────────────────────────────────────────────────────────────
+    _check_pause()
+    _save_checkpoint()
+    log("[aws] Starting VPC deep audit...")
+    status("aws", "VPC audit", "running")
+
+    # FORGE-AWS-070: VPCs without flow logs
+    vpcs_resp = _aws_run(["ec2", "describe-vpcs"], "ec2_vpcs.json") or {}
+    vpcs = vpcs_resp.get("Vpcs") or []
+    log(f"[aws] Found {len(vpcs)} VPC(s)")
+    flow_logs_resp = _aws_run(["ec2", "describe-flow-logs"], "ec2_flow_logs.json") or {}
+    flow_logs = flow_logs_resp.get("FlowLogs") or []
+    vpc_ids_with_flow = {fl.get("ResourceId") for fl in flow_logs if fl.get("ResourceType") == "VPC"}
+    _check_pause()
+    for vpc in vpcs:
+        vpc_id = vpc.get("VpcId", "")
+        if vpc_id not in vpc_ids_with_flow:
+            log(f"[aws] VPC {vpc_id} — no flow logs configured (MEDIUM)")
+            finding(title=f"VPC without flow logs: {vpc_id}",
+                     severity="MEDIUM",
+                     description=f"VPC {vpc_id} does not have VPC Flow Logs enabled — network traffic is not auditable.",
+                     data={"catalogue_id": "FORGE-AWS-070", "affected": vpc_id,
+                           "remediation": "aws ec2 create-flow-logs --resource-type VPC --resource-ids <vpc-id> --traffic-type ALL --log-destination-type cloud-watch-logs"},
+                     output_file=str(out_dir / "ec2_vpcs.json"))
+        else:
+            log(f"[aws] VPC {vpc_id} — flow logs OK")
+
+    # FORGE-AWS-071: default security group with rules (reuse existing SG data)
+    _check_pause()
+    for sg in sgs:
+        if sg.get("GroupName") == "default":
+            sg_id = sg.get("GroupId", "")
+            perms = sg.get("IpPermissions") or []
+            if perms:
+                log(f"[aws] Default SG {sg_id} — has inbound rules (HIGH)")
+                finding(title=f"Default security group has inbound rules: {sg_id}",
+                         severity="HIGH",
+                         description=f"Default security group {sg_id} has non-empty inbound rules. "
+                                     "Resources assigned to the default SG inherit these rules.",
+                         data={"catalogue_id": "FORGE-AWS-071", "affected": sg_id,
+                               "remediation": "Remove all inbound/outbound rules from the default security group."},
+                         output_file=str(out_dir / "ec2_security_groups.json"))
+            else:
+                log(f"[aws] Default SG {sg_id} — no inbound rules (OK)")
+    log("[aws] VPC deep audit complete")
+
+    # ── IAM deep ──────────────────────────────────────────────────────────────
+    _check_pause()
+    _save_checkpoint()
+    log("[aws] Starting IAM deep audit...")
+    status("aws", "IAM deep audit", "running")
+
+    # FORGE-AWS-024: password policy
+    log("[aws] Checking account password policy...")
+    pp_resp = _aws_run(["iam", "get-account-password-policy"], "iam_password_policy.json", use_region=False)
+    if pp_resp:
+        pp = pp_resp.get("PasswordPolicy") or {}
+        min_len = pp.get("MinimumPasswordLength", 0)
+        req_sym = pp.get("RequireSymbols", False)
+        req_num = pp.get("RequireNumbers", False)
+        req_upper = pp.get("RequireUppercaseCharacters", False)
+        req_lower = pp.get("RequireLowercaseCharacters", False)
+        issues = []
+        if min_len < 14:
+            issues.append(f"MinimumPasswordLength={min_len} (should be >=14)")
+        if not req_sym:
+            issues.append("RequireSymbols=false")
+        if not req_num:
+            issues.append("RequireNumbers=false")
+        if not req_upper:
+            issues.append("RequireUppercaseCharacters=false")
+        if not req_lower:
+            issues.append("RequireLowercaseCharacters=false")
+        if issues:
+            log(f"[aws] Password policy weaknesses: {'; '.join(issues)} (MEDIUM)")
+            finding(title="IAM password policy does not meet complexity requirements",
+                     severity="MEDIUM",
+                     description=f"Account password policy has weaknesses: {'; '.join(issues)}.",
+                     data={"catalogue_id": "FORGE-AWS-024", "affected": "account",
+                           "remediation": "aws iam update-account-password-policy --minimum-password-length 14 --require-symbols --require-numbers --require-uppercase-characters --require-lowercase-characters"},
+                     output_file=str(out_dir / "iam_password_policy.json"))
+        else:
+            log("[aws] Password policy meets complexity requirements")
+    else:
+        log("[aws] No account password policy configured (MEDIUM)")
+        finding(title="IAM account password policy not configured",
+                 severity="MEDIUM",
+                 description="No custom IAM password policy is configured — AWS defaults apply (6 char minimum, no complexity).",
+                 data={"catalogue_id": "FORGE-AWS-024", "affected": "account",
+                       "remediation": "aws iam update-account-password-policy with strong complexity settings."},
+                 output_file=str(out_dir / "iam_password_policy.json"))
+
+    # FORGE-AWS-025: expired server certificates
+    log("[aws] Checking IAM server certificates...")
+    certs_resp = _aws_run(["iam", "list-server-certificates"], "iam_server_certs.json", use_region=False) or {}
+    server_certs = certs_resp.get("ServerCertificateMetadataList") or []
+    log(f"[aws] Found {len(server_certs)} IAM server certificate(s)")
+    now_utc = datetime.now(timezone.utc)
+    for cert in server_certs:
+        cert_name = cert.get("ServerCertificateName", "")
+        expiration = cert.get("Expiration", "")
+        if expiration:
+            try:
+                exp_dt = datetime.fromisoformat(expiration.replace("Z", "+00:00"))
+                if exp_dt < now_utc:
+                    days_expired = (now_utc - exp_dt).days
+                    log(f"[aws] Certificate {cert_name} — expired {days_expired} day(s) ago (CRITICAL)")
+                    finding(title=f"IAM server certificate expired: {cert_name}",
+                             severity="CRITICAL",
+                             description=f"IAM server certificate {cert_name} expired {days_expired} day(s) ago.",
+                             data={"catalogue_id": "FORGE-AWS-025", "affected": cert_name,
+                                   "remediation": "Replace or delete the expired certificate."},
+                             output_file=str(out_dir / "iam_server_certs.json"))
+                else:
+                    log(f"[aws] Certificate {cert_name} — valid (expires {expiration})")
+            except Exception:
+                pass
+    log("[aws] IAM deep audit complete")
+
+    # ── EFS ───────────────────────────────────────────────────────────────────
+    _check_pause()
+    _save_checkpoint()
+    log("[aws] Starting EFS audit...")
+    status("aws", "EFS audit", "running")
+    efs_resp = _aws_run(["efs", "describe-file-systems"], "efs_filesystems.json") or {}
+    efs_list = efs_resp.get("FileSystems") or []
+    log(f"[aws] Found {len(efs_list)} EFS file system(s)")
+    _check_pause()
+    for fs in efs_list:
+        fs_id = fs.get("FileSystemId", "")
+        fs_name = fs.get("Name", fs_id)
+        log(f"[aws] Checking EFS {fs_name} ({fs_id})...")
+        # FORGE-AWS-080: public file system policy
+        pol_resp = _aws_run(["efs", "describe-file-system-policy", "--file-system-id", fs_id],
+                             f"efs_{fs_id}_policy.json")
+        if pol_resp:
+            try:
+                pol_doc = json.loads(pol_resp.get("Policy", "{}"))
+                for stmt in pol_doc.get("Statement") or []:
+                    principal = stmt.get("Principal", "")
+                    p_aws = principal.get("AWS", "") if isinstance(principal, dict) else principal
+                    if p_aws == "*":
+                        log(f"[aws] EFS {fs_name} — policy allows Principal=* (CRITICAL)")
+                        finding(title=f"EFS file system publicly accessible: {fs_name}",
+                                 severity="CRITICAL",
+                                 description=f"EFS file system {fs_id} has a resource policy granting Principal=* — "
+                                             "any AWS principal can mount and access the filesystem.",
+                                 data={"catalogue_id": "FORGE-AWS-080", "affected": fs_name,
+                                       "remediation": "Restrict the EFS resource policy to specific accounts, VPCs, or IAM roles."},
+                                 output_file=str(out_dir / f"efs_{fs_id}_policy.json"))
+                        break
+            except (json.JSONDecodeError, TypeError):
+                pass
+        else:
+            log(f"[aws] EFS {fs_name} — no resource policy (default access)")
+    log(f"[aws] EFS audit complete — checked {len(efs_list)} file system(s)")
+
+    # ── SNS ───────────────────────────────────────────────────────────────────
+    _check_pause()
+    _save_checkpoint()
+    log("[aws] Starting SNS audit...")
+    status("aws", "SNS audit", "running")
+    sns_resp = _aws_run(["sns", "list-topics"], "sns_topics.json") or {}
+    sns_topics = sns_resp.get("Topics") or []
+    log(f"[aws] Found {len(sns_topics)} SNS topic(s)")
+    _check_pause()
+    for topic in sns_topics:
+        _check_pause()
+        topic_arn = topic.get("TopicArn", "")
+        topic_name = topic_arn.rsplit(":", 1)[-1] if ":" in topic_arn else topic_arn
+        log(f"[aws] Checking SNS topic {topic_name}...")
+        attrs = _aws_run(["sns", "get-topic-attributes", "--topic-arn", topic_arn],
+                          f"sns_{topic_name}_attrs.json") or {}
+        topic_attrs = attrs.get("Attributes") or {}
+
+        # FORGE-AWS-090: no KMS encryption
+        if not topic_attrs.get("KmsMasterKeyId"):
+            log(f"[aws] SNS {topic_name} — no KMS encryption (HIGH)")
+            finding(title=f"SNS topic not encrypted with KMS: {topic_name}",
+                     severity="HIGH",
+                     description=f"SNS topic {topic_name} does not use a KMS key for server-side encryption.",
+                     data={"catalogue_id": "FORGE-AWS-090", "affected": topic_name,
+                           "remediation": "aws sns set-topic-attributes --topic-arn <arn> --attribute-name KmsMasterKeyId --attribute-value <key-id>"},
+                     output_file=str(out_dir / f"sns_{topic_name}_attrs.json"))
+        else:
+            log(f"[aws] SNS {topic_name} — KMS encryption OK")
+
+        # FORGE-AWS-091: public access policy
+        policy_str = topic_attrs.get("Policy", "")
+        if policy_str:
+            try:
+                pol_doc = json.loads(policy_str)
+                for stmt in pol_doc.get("Statement") or []:
+                    principal = stmt.get("Principal", "")
+                    p_val = principal.get("AWS", "") if isinstance(principal, dict) else principal
+                    condition = stmt.get("Condition") or {}
+                    if p_val == "*" and not condition:
+                        log(f"[aws] SNS {topic_name} — policy allows Principal=* (HIGH)")
+                        finding(title=f"SNS topic publicly accessible: {topic_name}",
+                                 severity="HIGH",
+                                 description=f"SNS topic {topic_name} has a policy granting Principal=* without Condition.",
+                                 data={"catalogue_id": "FORGE-AWS-091", "affected": topic_name,
+                                       "remediation": "Restrict the topic policy to specific accounts or services."},
+                                 output_file=str(out_dir / f"sns_{topic_name}_attrs.json"))
+                        break
+            except (json.JSONDecodeError, TypeError):
+                pass
+    log(f"[aws] SNS audit complete — checked {len(sns_topics)} topic(s)")
+
+    # ── SQS ───────────────────────────────────────────────────────────────────
+    _check_pause()
+    _save_checkpoint()
+    log("[aws] Starting SQS audit...")
+    status("aws", "SQS audit", "running")
+    sqs_resp = _aws_run(["sqs", "list-queues"], "sqs_queues.json") or {}
+    sqs_urls = sqs_resp.get("QueueUrls") or []
+    log(f"[aws] Found {len(sqs_urls)} SQS queue(s)")
+    _check_pause()
+    for q_url in sqs_urls:
+        _check_pause()
+        q_name = q_url.rsplit("/", 1)[-1] if "/" in q_url else q_url
+        log(f"[aws] Checking SQS queue {q_name}...")
+        q_attrs_resp = _aws_run(["sqs", "get-queue-attributes", "--queue-url", q_url,
+                                  "--attribute-names", "All"],
+                                 f"sqs_{q_name}_attrs.json") or {}
+        q_attrs = q_attrs_resp.get("Attributes") or {}
+
+        # FORGE-AWS-092: no encryption
+        has_kms = q_attrs.get("KmsMasterKeyId")
+        has_sse = q_attrs.get("SqsManagedSseEnabled", "false").lower() == "true"
+        if not has_kms and not has_sse:
+            log(f"[aws] SQS {q_name} — no encryption configured (MEDIUM)")
+            finding(title=f"SQS queue not encrypted: {q_name}",
+                     severity="MEDIUM",
+                     description=f"SQS queue {q_name} has neither KMS nor SQS-managed SSE encryption enabled.",
+                     data={"catalogue_id": "FORGE-AWS-092", "affected": q_name,
+                           "remediation": "aws sqs set-queue-attributes --queue-url <url> --attributes SqsManagedSseEnabled=true"},
+                     output_file=str(out_dir / f"sqs_{q_name}_attrs.json"))
+        else:
+            log(f"[aws] SQS {q_name} — encryption OK")
+
+        # FORGE-AWS-093: public access policy
+        policy_str = q_attrs.get("Policy", "")
+        if policy_str:
+            try:
+                pol_doc = json.loads(policy_str)
+                for stmt in pol_doc.get("Statement") or []:
+                    principal = stmt.get("Principal", "")
+                    p_val = principal.get("AWS", "") if isinstance(principal, dict) else principal
+                    condition = stmt.get("Condition") or {}
+                    if p_val == "*" and not condition:
+                        log(f"[aws] SQS {q_name} — policy allows Principal=* without Condition (CRITICAL)")
+                        finding(title=f"SQS queue publicly accessible: {q_name}",
+                                 severity="CRITICAL",
+                                 description=f"SQS queue {q_name} has a policy granting Principal=* without Condition.",
+                                 data={"catalogue_id": "FORGE-AWS-093", "affected": q_name,
+                                       "remediation": "Restrict the queue policy Principal to specific accounts or services."},
+                                 output_file=str(out_dir / f"sqs_{q_name}_attrs.json"))
+                        break
+            except (json.JSONDecodeError, TypeError):
+                pass
+    log(f"[aws] SQS audit complete — checked {len(sqs_urls)} queue(s)")
+
+    # ── GuardDuty ─────────────────────────────────────────────────────────────
+    _check_pause()
+    _save_checkpoint()
+    log("[aws] Starting GuardDuty audit...")
+    status("aws", "GuardDuty audit", "running")
+    gd_resp = _aws_run(["guardduty", "list-detectors"], "guardduty_detectors.json") or {}
+    gd_detectors = gd_resp.get("DetectorIds") or []
+    if not gd_detectors:
+        log("[aws] GuardDuty not enabled — no detectors found (MEDIUM)")
+        finding(title="GuardDuty not enabled",
+                 severity="MEDIUM",
+                 description="Amazon GuardDuty is not enabled in this region — threat detection for the account is absent.",
+                 data={"catalogue_id": "FORGE-AWS-100",
+                       "remediation": "aws guardduty create-detector --enable"},
+                 output_file=str(out_dir / "guardduty_detectors.json"))
+    else:
+        log(f"[aws] GuardDuty enabled — {len(gd_detectors)} detector(s)")
+    log("[aws] GuardDuty audit complete")
+
+    # ── Security Hub ──────────────────────────────────────────────────────────
+    _check_pause()
+    _save_checkpoint()
+    log("[aws] Starting Security Hub audit...")
+    status("aws", "Security Hub audit", "running")
+    sh_resp = _aws_run(["securityhub", "describe-hub"], "securityhub_hub.json")
+    if not sh_resp or not sh_resp.get("HubArn"):
+        log("[aws] Security Hub not enabled (MEDIUM)")
+        finding(title="Security Hub not enabled",
+                 severity="MEDIUM",
+                 description="AWS Security Hub is not enabled in this region — centralized security posture management is absent.",
+                 data={"catalogue_id": "FORGE-AWS-101",
+                       "remediation": "aws securityhub enable-security-hub"},
+                 output_file=str(out_dir / "securityhub_hub.json"))
+    else:
+        log(f"[aws] Security Hub enabled — {sh_resp.get('HubArn', '')}")
+    log("[aws] Security Hub audit complete")
+
+    # ── ACM ───────────────────────────────────────────────────────────────────
+    _check_pause()
+    _save_checkpoint()
+    log("[aws] Starting ACM certificate audit...")
+    status("aws", "ACM audit", "running")
+    acm_resp = _aws_run(["acm", "list-certificates"], "acm_certificates.json") or {}
+    acm_certs = acm_resp.get("CertificateSummaryList") or []
+    log(f"[aws] Found {len(acm_certs)} ACM certificate(s)")
+    _check_pause()
+    for cert in acm_certs:
+        cert_arn = cert.get("CertificateArn", "")
+        domain = cert.get("DomainName", cert_arn)
+        not_after = cert.get("NotAfter", "")
+        if not_after:
+            try:
+                exp_str = not_after if isinstance(not_after, str) else str(not_after)
+                exp_dt = datetime.fromisoformat(exp_str.replace("Z", "+00:00"))
+                days_left = (exp_dt - now_utc).days
+                if days_left < 0:
+                    log(f"[aws] ACM {domain} — expired {abs(days_left)} day(s) ago (HIGH)")
+                    finding(title=f"ACM certificate expired: {domain}",
+                             severity="HIGH",
+                             description=f"ACM certificate for {domain} expired {abs(days_left)} day(s) ago.",
+                             data={"catalogue_id": "FORGE-AWS-110", "affected": domain,
+                                   "remediation": "Renew or replace the expired ACM certificate."},
+                             output_file=str(out_dir / "acm_certificates.json"))
+                elif days_left <= 30:
+                    log(f"[aws] ACM {domain} — expires in {days_left} day(s) (HIGH)")
+                    finding(title=f"ACM certificate expiring soon: {domain}",
+                             severity="HIGH",
+                             description=f"ACM certificate for {domain} expires in {days_left} day(s).",
+                             data={"catalogue_id": "FORGE-AWS-110", "affected": domain,
+                                   "remediation": "Renew the certificate or verify auto-renewal is working."},
+                             output_file=str(out_dir / "acm_certificates.json"))
+                else:
+                    log(f"[aws] ACM {domain} — valid ({days_left} days remaining)")
+            except Exception:
+                log(f"[aws] ACM {domain} — could not parse expiration date")
+    log(f"[aws] ACM audit complete — checked {len(acm_certs)} certificate(s)")
+
+    # ── CloudWatch Logs ───────────────────────────────────────────────────────
+    _check_pause()
+    _save_checkpoint()
+    log("[aws] Starting CloudWatch Logs audit...")
+    status("aws", "CloudWatch Logs audit", "running")
+    cw_resp = _aws_run(["logs", "describe-log-groups", "--limit", "200"],
+                        "cloudwatch_log_groups.json") or {}
+    log_groups = cw_resp.get("logGroups") or []
+    log(f"[aws] Found {len(log_groups)} CloudWatch log group(s) (max 200)")
+    _check_pause()
+    cw_no_kms = 0
+    cw_no_retention = 0
+    for lg in log_groups:
+        lg_name = lg.get("logGroupName", "")
+        # FORGE-AWS-120: no KMS encryption
+        if not lg.get("kmsKeyId"):
+            cw_no_kms += 1
+        # FORGE-AWS-121: no retention period
+        if not lg.get("retentionInDays"):
+            cw_no_retention += 1
+    if cw_no_kms > 0:
+        log(f"[aws] {cw_no_kms} CloudWatch log group(s) not encrypted with KMS (MEDIUM)")
+        finding(title=f"CloudWatch log groups without KMS encryption ({cw_no_kms} group(s))",
+                 severity="MEDIUM",
+                 description=f"{cw_no_kms} of {len(log_groups)} CloudWatch log groups are not encrypted with a customer-managed KMS key.",
+                 data={"catalogue_id": "FORGE-AWS-120",
+                       "affected": f"{cw_no_kms} log group(s)",
+                       "remediation": "aws logs associate-kms-key --log-group-name <name> --kms-key-id <key-arn>"},
+                 output_file=str(out_dir / "cloudwatch_log_groups.json"))
+    else:
+        log("[aws] All CloudWatch log groups have KMS encryption")
+    if cw_no_retention > 0:
+        log(f"[aws] {cw_no_retention} CloudWatch log group(s) have no retention period (MEDIUM)")
+        finding(title=f"CloudWatch log groups without retention policy ({cw_no_retention} group(s))",
+                 severity="MEDIUM",
+                 description=f"{cw_no_retention} of {len(log_groups)} CloudWatch log groups have no retention policy set (logs retained indefinitely).",
+                 data={"catalogue_id": "FORGE-AWS-121",
+                       "affected": f"{cw_no_retention} log group(s)",
+                       "remediation": "aws logs put-retention-policy --log-group-name <name> --retention-in-days <days>"},
+                 output_file=str(out_dir / "cloudwatch_log_groups.json"))
+    else:
+        log("[aws] All CloudWatch log groups have retention policies")
+    log("[aws] CloudWatch Logs audit complete")
+
+    # ── OpenSearch ────────────────────────────────────────────────────────────
+    _check_pause()
+    _save_checkpoint()
+    log("[aws] Starting OpenSearch audit...")
+    status("aws", "OpenSearch audit", "running")
+    os_resp = _aws_run(["opensearch", "list-domain-names"], "opensearch_domains.json") or {}
+    os_domains = os_resp.get("DomainNames") or []
+    log(f"[aws] Found {len(os_domains)} OpenSearch domain(s)")
+    _check_pause()
+    for dom in os_domains:
+        _check_pause()
+        dom_name = dom.get("DomainName", "")
+        log(f"[aws] Checking OpenSearch domain {dom_name}...")
+        dom_detail = _aws_run(["opensearch", "describe-domain", "--domain-name", dom_name],
+                               f"opensearch_{dom_name}_detail.json") or {}
+        ds = dom_detail.get("DomainStatus") or {}
+
+        # FORGE-AWS-140: public domain (no VPC)
+        vpc_opts = ds.get("VPCOptions") or {}
+        if not vpc_opts.get("VPCId"):
+            log(f"[aws] OpenSearch {dom_name} — not in a VPC (public endpoint) (CRITICAL)")
+            finding(title=f"OpenSearch domain publicly accessible: {dom_name}",
+                     severity="CRITICAL",
+                     description=f"OpenSearch domain {dom_name} is not deployed inside a VPC — "
+                                 "the endpoint is accessible from the public internet.",
+                     data={"catalogue_id": "FORGE-AWS-140", "affected": dom_name,
+                           "remediation": "Migrate the domain into a VPC (requires recreation for existing domains)."},
+                     output_file=str(out_dir / f"opensearch_{dom_name}_detail.json"))
+        else:
+            log(f"[aws] OpenSearch {dom_name} — in VPC {vpc_opts.get('VPCId')}")
+
+        # FORGE-AWS-141: encryption at rest not enabled
+        enc_conf = ds.get("EncryptionAtRestOptions") or {}
+        if not enc_conf.get("Enabled"):
+            log(f"[aws] OpenSearch {dom_name} — encryption at rest disabled (HIGH)")
+            finding(title=f"OpenSearch domain encryption at rest disabled: {dom_name}",
+                     severity="HIGH",
+                     description=f"OpenSearch domain {dom_name} does not have encryption at rest enabled.",
+                     data={"catalogue_id": "FORGE-AWS-141", "affected": dom_name,
+                           "remediation": "Enable encryption at rest in the domain configuration."},
+                     output_file=str(out_dir / f"opensearch_{dom_name}_detail.json"))
+        else:
+            log(f"[aws] OpenSearch {dom_name} — encryption at rest enabled")
+    log(f"[aws] OpenSearch audit complete — checked {len(os_domains)} domain(s)")
+
+    # ── Secrets Manager ───────────────────────────────────────────────────────
+    _check_pause()
+    _save_checkpoint()
+    log("[aws] Starting Secrets Manager audit...")
+    status("aws", "Secrets Manager audit", "running")
+    sm_resp = _aws_run(["secretsmanager", "list-secrets"], "secretsmanager_secrets.json") or {}
+    sm_secrets = sm_resp.get("SecretList") or []
+    log(f"[aws] Found {len(sm_secrets)} secret(s)")
+    _check_pause()
+    for secret in sm_secrets:
+        s_name = secret.get("Name", "")
+        # FORGE-AWS-150: rotation not enabled
+        if not secret.get("RotationEnabled"):
+            log(f"[aws] Secret {s_name} — rotation not enabled (MEDIUM)")
+            finding(title=f"Secrets Manager secret rotation disabled: {s_name}",
+                     severity="MEDIUM",
+                     description=f"Secret {s_name} does not have automatic rotation enabled.",
+                     data={"catalogue_id": "FORGE-AWS-150", "affected": s_name,
+                           "remediation": "Configure automatic rotation with a Lambda rotation function."},
+                     output_file=str(out_dir / "secretsmanager_secrets.json"))
+        else:
+            log(f"[aws] Secret {s_name} — rotation enabled")
+    log(f"[aws] Secrets Manager audit complete — checked {len(sm_secrets)} secret(s)")
+
+    # ── CloudFront ────────────────────────────────────────────────────────────
+    _check_pause()
+    _save_checkpoint()
+    log("[aws] Starting CloudFront audit...")
+    status("aws", "CloudFront audit", "running")
+    cf_resp = _aws_run(["cloudfront", "list-distributions"], "cloudfront_distributions.json", use_region=False) or {}
+    dist_list = (cf_resp.get("DistributionList") or {}).get("Items") or []
+    log(f"[aws] Found {len(dist_list)} CloudFront distribution(s)")
+    _check_pause()
+    for dist in dist_list:
+        _check_pause()
+        dist_id = dist.get("Id", "")
+        aliases = (dist.get("Aliases") or {}).get("Items") or []
+        dist_label = aliases[0] if aliases else dist_id
+        log(f"[aws] Checking CloudFront distribution {dist_label} ({dist_id})...")
+
+        # FORGE-AWS-160: access logging not enabled
+        logging_cfg = dist.get("Logging") or {}
+        if not logging_cfg.get("Enabled"):
+            log(f"[aws] CloudFront {dist_label} — access logging disabled (MEDIUM)")
+            finding(title=f"CloudFront distribution access logging disabled: {dist_label}",
+                     severity="MEDIUM",
+                     description=f"CloudFront distribution {dist_id} does not have access logging enabled.",
+                     data={"catalogue_id": "FORGE-AWS-160", "affected": dist_label,
+                           "remediation": "Enable access logging to an S3 bucket."},
+                     output_file=str(out_dir / "cloudfront_distributions.json"))
+        else:
+            log(f"[aws] CloudFront {dist_label} — access logging enabled")
+
+        # FORGE-AWS-161: no WAF WebACL attached
+        if not dist.get("WebACLId"):
+            log(f"[aws] CloudFront {dist_label} — no WAF WebACL attached (MEDIUM)")
+            finding(title=f"CloudFront distribution without WAF: {dist_label}",
+                     severity="MEDIUM",
+                     description=f"CloudFront distribution {dist_id} does not have an AWS WAF WebACL attached.",
+                     data={"catalogue_id": "FORGE-AWS-161", "affected": dist_label,
+                           "remediation": "Associate an AWS WAF WebACL with the distribution."},
+                     output_file=str(out_dir / "cloudfront_distributions.json"))
+        else:
+            log(f"[aws] CloudFront {dist_label} — WAF WebACL attached")
+
+        # FORGE-AWS-162: viewer protocol policy allows HTTP
+        default_cb = dist.get("DefaultCacheBehavior") or {}
+        vpp = default_cb.get("ViewerProtocolPolicy", "")
+        if vpp == "allow-all":
+            log(f"[aws] CloudFront {dist_label} — allows HTTP viewer connections (MEDIUM)")
+            finding(title=f"CloudFront distribution allows HTTP: {dist_label}",
+                     severity="MEDIUM",
+                     description=f"CloudFront distribution {dist_id} default cache behavior allows HTTP (ViewerProtocolPolicy=allow-all).",
+                     data={"catalogue_id": "FORGE-AWS-162", "affected": dist_label,
+                           "remediation": "Set ViewerProtocolPolicy to redirect-to-https or https-only."},
+                     output_file=str(out_dir / "cloudfront_distributions.json"))
+        else:
+            log(f"[aws] CloudFront {dist_label} — viewer protocol OK ({vpp})")
+    log(f"[aws] CloudFront audit complete — checked {len(dist_list)} distribution(s)")
+
+    # ── DynamoDB ──────────────────────────────────────────────────────────────
+    _check_pause()
+    _save_checkpoint()
+    log("[aws] Starting DynamoDB audit...")
+    status("aws", "DynamoDB audit", "running")
+    ddb_resp = _aws_run(["dynamodb", "list-tables"], "dynamodb_tables.json") or {}
+    ddb_tables = ddb_resp.get("TableNames") or []
+    log(f"[aws] Found {len(ddb_tables)} DynamoDB table(s)")
+    _check_pause()
+    for tbl_name in ddb_tables:
+        _check_pause()
+        log(f"[aws] Checking DynamoDB table {tbl_name}...")
+        tbl_resp = _aws_run(["dynamodb", "describe-table", "--table-name", tbl_name],
+                             f"dynamodb_{tbl_name}_detail.json") or {}
+        tbl = tbl_resp.get("Table") or {}
+        # FORGE-AWS-170: encryption not configured / DEFAULT only
+        sse = tbl.get("SSEDescription") or {}
+        sse_status = sse.get("Status", "")
+        if sse_status not in ("ENABLED", "ENABLING"):
+            log(f"[aws] DynamoDB {tbl_name} — SSE not enabled / using default encryption (MEDIUM)")
+            finding(title=f"DynamoDB table not using customer-managed encryption: {tbl_name}",
+                     severity="MEDIUM",
+                     description=f"DynamoDB table {tbl_name} is either using default AWS-owned encryption or has no "
+                                 "explicit SSE configuration. Customer-managed KMS keys provide better audit control.",
+                     data={"catalogue_id": "FORGE-AWS-170", "affected": tbl_name,
+                           "remediation": "aws dynamodb update-table --table-name <table> --sse-specification Enabled=true,SSEType=KMS,KMSMasterKeyId=<key-arn>"},
+                     output_file=str(out_dir / f"dynamodb_{tbl_name}_detail.json"))
+        else:
+            log(f"[aws] DynamoDB {tbl_name} — customer-managed SSE enabled")
+    log(f"[aws] DynamoDB audit complete — checked {len(ddb_tables)} table(s)")
+
+    # ── ECS ───────────────────────────────────────────────────────────────────
+    _check_pause()
+    _save_checkpoint()
+    log("[aws] Starting ECS task definition audit...")
+    status("aws", "ECS audit", "running")
+    ecs_resp = _aws_run(["ecs", "list-task-definitions", "--max-items", "50"],
+                         "ecs_task_definitions.json") or {}
+    ecs_arns = ecs_resp.get("taskDefinitionArns") or []
+    log(f"[aws] Found {len(ecs_arns)} ECS task definition(s) (max 50)")
+    _check_pause()
+    for td_arn in ecs_arns:
+        _check_pause()
+        td_name = td_arn.rsplit("/", 1)[-1] if "/" in td_arn else td_arn
+        log(f"[aws] Checking ECS task definition {td_name}...")
+        td_resp = _aws_run(["ecs", "describe-task-definition", "--task-definition", td_arn],
+                            f"ecs_{td_name}_detail.json") or {}
+        td = td_resp.get("taskDefinition") or {}
+        containers = td.get("containerDefinitions") or []
+        for cdef in containers:
+            c_name = cdef.get("name", "")
+            env_list = cdef.get("environment") or []
+            secret_keys = [e.get("name", "") for e in env_list
+                           if _SECRET_PATTERNS.search(e.get("name", ""))]
+            if secret_keys:
+                log(f"[aws] ECS {td_name}/{c_name} — environment contains secret-like keys: {secret_keys} (CRITICAL)")
+                finding(title=f"ECS task definition contains secrets in environment: {td_name}/{c_name}",
+                         severity="CRITICAL",
+                         description=f"ECS task definition {td_name}, container {c_name} has environment variables "
+                                     f"with secret-like names: {', '.join(secret_keys)}.",
+                         data={"catalogue_id": "FORGE-AWS-130", "affected": f"{td_name}/{c_name}",
+                               "remediation": "Use ECS secrets (valueFrom) with Secrets Manager or SSM Parameter Store instead of plaintext environment variables."},
+                         output_file=str(out_dir / f"ecs_{td_name}_detail.json"))
+    log(f"[aws] ECS audit complete — checked {len(ecs_arns)} task definition(s)")
 
     log(f"[aws] AWS audit complete — profile={profile or 'default'}, region={region or 'default'}")
     status("aws", "AWS Account Audit", "complete")

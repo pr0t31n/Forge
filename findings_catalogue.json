@@ -213,6 +213,3072 @@
       "remediation_effort": "Moderate",
       "remediation_component": "Authentication",
       "remediation_category": "Access Control"
+    },
+    {
+      "id": "FORGE-AWS-001",
+      "title": "S3 bucket missing public access block: {name}",
+      "aliases": [
+        "S3 no public access block"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "HIGH",
+      "description": "No S3 public access block configured — objects may be publicly accessible via ACLs or bucket policies.",
+      "impact": "Without a public access block, misconfigured bucket policies or object ACLs can expose sensitive data to the entire internet. An attacker can enumerate and download objects without authentication.",
+      "cwe": [
+        "CWE-284"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 7.5,
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "A01:2021 Broken Access Control",
+      "owasp_api": "",
+      "nist_csf2": [
+        "PR.DS-1",
+        "PR.DS-2"
+      ],
+      "nist_800_53": [
+        "AC-3",
+        "AC-6",
+        "SC-7"
+      ],
+      "nist_800_171": [],
+      "pci_dss_4": [
+        "1.3.1",
+        "7.1"
+      ],
+      "iso_27001": [],
+      "iso_27002": [],
+      "soc2": [],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [
+        {
+          "technique": "T1530",
+          "tactic": "Collection",
+          "name": "Data from Cloud Storage"
+        }
+      ],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "aws s3api put-public-access-block --bucket <name> --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true",
+      "remediation_component": "Configuration",
+      "remediation_category": "Access Control",
+      "remediation_effort": "Easy",
+      "validation_tools": [
+        "aws",
+        "forge"
+      ]
+    },
+    {
+      "id": "FORGE-AWS-002",
+      "title": "S3 bucket incomplete public access block: {name}",
+      "aliases": [
+        "S3 partial public access block"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "MEDIUM",
+      "description": "Not all four public access block settings are enabled on the S3 bucket.",
+      "impact": "Partial public access block leaves gaps that can be exploited to make objects or the bucket policy public. An attacker who gains write access to the bucket policy or ACLs can bypass the incomplete protections.",
+      "cwe": [
+        "CWE-284"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 5.3,
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "A01:2021 Broken Access Control",
+      "owasp_api": "",
+      "nist_csf2": [
+        "PR.DS-1"
+      ],
+      "nist_800_53": [
+        "AC-3",
+        "AC-6"
+      ],
+      "nist_800_171": [],
+      "pci_dss_4": [
+        "1.3.1"
+      ],
+      "iso_27001": [],
+      "iso_27002": [],
+      "soc2": [],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [
+        {
+          "technique": "T1530",
+          "tactic": "Collection",
+          "name": "Data from Cloud Storage"
+        }
+      ],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "Enable all four public access block settings: BlockPublicAcls, IgnorePublicAcls, BlockPublicPolicy, RestrictPublicBuckets.",
+      "remediation_component": "Configuration",
+      "remediation_category": "Access Control",
+      "remediation_effort": "Easy",
+      "validation_tools": [
+        "aws",
+        "forge"
+      ]
+    },
+    {
+      "id": "FORGE-AWS-003",
+      "title": "S3 bucket versioning disabled: {name}",
+      "aliases": [
+        "S3 versioning not enabled"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "LOW",
+      "description": "Versioning is not enabled on the S3 bucket — accidental deletions or overwrites are unrecoverable.",
+      "impact": "Without versioning, a compromised credential or accidental deletion permanently destroys data. Ransomware actors who gain S3 write access can overwrite objects with no recovery path.",
+      "cwe": [
+        "CWE-693"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 3.7,
+      "cvss_vector": "",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "",
+      "owasp_api": "",
+      "nist_csf2": [
+        "PR.IP-4"
+      ],
+      "nist_800_53": [
+        "CP-9",
+        "SI-12"
+      ],
+      "nist_800_171": [],
+      "pci_dss_4": [],
+      "iso_27001": [],
+      "iso_27002": [],
+      "soc2": [],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [
+        {
+          "technique": "T1485",
+          "tactic": "Impact",
+          "name": "Data Destruction"
+        }
+      ],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "aws s3api put-bucket-versioning --bucket <name> --versioning-configuration Status=Enabled",
+      "remediation_component": "Configuration",
+      "remediation_category": "Configuration",
+      "remediation_effort": "Easy",
+      "validation_tools": [
+        "aws",
+        "forge"
+      ]
+    },
+    {
+      "id": "FORGE-AWS-004",
+      "title": "S3 bucket default encryption not configured: {name}",
+      "aliases": [
+        "S3 no default encryption"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "MEDIUM",
+      "description": "No default server-side encryption configured on the S3 bucket.",
+      "impact": "Objects uploaded without explicit encryption headers are stored in plaintext. If the underlying storage is compromised or snapshots are exfiltrated, data is readable without decryption.",
+      "cwe": [
+        "CWE-311"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 5.3,
+      "cvss_vector": "",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "A02:2021 Cryptographic Failures",
+      "owasp_api": "",
+      "nist_csf2": [
+        "PR.DS-1"
+      ],
+      "nist_800_53": [
+        "SC-28"
+      ],
+      "nist_800_171": [],
+      "pci_dss_4": [
+        "3.5.1"
+      ],
+      "iso_27001": [],
+      "iso_27002": [],
+      "soc2": [],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [
+        {
+          "technique": "T1530",
+          "tactic": "Collection",
+          "name": "Data from Cloud Storage"
+        }
+      ],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "Enable SSE-S3 or SSE-KMS default encryption on the bucket.",
+      "remediation_component": "Configuration",
+      "remediation_category": "Cryptography",
+      "remediation_effort": "Easy",
+      "validation_tools": [
+        "aws",
+        "forge"
+      ]
+    },
+    {
+      "id": "FORGE-AWS-005",
+      "title": "S3 bucket access logging disabled: {name}",
+      "aliases": [
+        "S3 no access logging"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "LOW",
+      "description": "Server access logging is not enabled on the S3 bucket — access patterns are not auditable.",
+      "impact": "Without access logs, unauthorized access or data exfiltration from the bucket cannot be detected or investigated after the fact. Incident response is severely hampered.",
+      "cwe": [
+        "CWE-778"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 3.7,
+      "cvss_vector": "",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "A09:2021 Security Logging and Monitoring Failures",
+      "owasp_api": "",
+      "nist_csf2": [
+        "DE.AE-3"
+      ],
+      "nist_800_53": [
+        "AU-2",
+        "AU-3",
+        "AU-12"
+      ],
+      "nist_800_171": [],
+      "pci_dss_4": [
+        "10.2.1"
+      ],
+      "iso_27001": [],
+      "iso_27002": [],
+      "soc2": [],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [
+        {
+          "technique": "T1530",
+          "tactic": "Collection",
+          "name": "Data from Cloud Storage"
+        }
+      ],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "Enable server access logging to a dedicated logging bucket.",
+      "remediation_component": "Configuration",
+      "remediation_category": "Logging",
+      "remediation_effort": "Easy",
+      "validation_tools": [
+        "aws",
+        "forge"
+      ]
+    },
+    {
+      "id": "FORGE-AWS-006",
+      "title": "S3 bucket policy is public: {name}",
+      "aliases": [
+        "S3 public bucket policy"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "CRITICAL",
+      "description": "The S3 bucket policy evaluates as public — objects may be accessible to anyone on the internet.",
+      "impact": "Any anonymous internet user can list and download objects from the bucket. Sensitive data (PII, credentials, backups, intellectual property) is fully exposed. This is a common root cause of major data breaches.",
+      "cwe": [
+        "CWE-284",
+        "CWE-732"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 9.1,
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "A01:2021 Broken Access Control",
+      "owasp_api": "",
+      "nist_csf2": [
+        "PR.DS-1",
+        "PR.DS-2"
+      ],
+      "nist_800_53": [
+        "AC-3",
+        "AC-6",
+        "SC-7"
+      ],
+      "nist_800_171": [],
+      "pci_dss_4": [
+        "1.3.1",
+        "7.1"
+      ],
+      "iso_27001": [],
+      "iso_27002": [],
+      "soc2": [],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [
+        {
+          "technique": "T1530",
+          "tactic": "Collection",
+          "name": "Data from Cloud Storage"
+        }
+      ],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "Review and restrict the bucket policy. Enable S3 Block Public Access at the account level.",
+      "remediation_component": "Configuration",
+      "remediation_category": "Access Control",
+      "remediation_effort": "Easy",
+      "validation_tools": [
+        "aws",
+        "forge"
+      ]
+    },
+    {
+      "id": "FORGE-AWS-007",
+      "title": "S3 bucket MFA Delete not enabled: {name}",
+      "aliases": [
+        "S3 MFA Delete disabled"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "MEDIUM",
+      "description": "MFA Delete is not enabled — versioned objects can be permanently deleted without MFA authentication.",
+      "impact": "An attacker with DeleteObject permission can permanently remove object versions and delete markers, destroying data and audit trails even when versioning is enabled. MFA Delete would require a second factor for these destructive operations.",
+      "cwe": [
+        "CWE-308"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 5.3,
+      "cvss_vector": "",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "",
+      "owasp_api": "",
+      "nist_csf2": [
+        "PR.AC-7"
+      ],
+      "nist_800_53": [
+        "IA-2(1)",
+        "CP-9"
+      ],
+      "nist_800_171": [],
+      "pci_dss_4": [
+        "8.4.2"
+      ],
+      "iso_27001": [],
+      "iso_27002": [],
+      "soc2": [],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [
+        {
+          "technique": "T1485",
+          "tactic": "Impact",
+          "name": "Data Destruction"
+        }
+      ],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "Enable MFA Delete via aws s3api put-bucket-versioning with an MFA device.",
+      "remediation_component": "Configuration",
+      "remediation_category": "Authentication",
+      "remediation_effort": "Moderate",
+      "validation_tools": [
+        "aws",
+        "forge"
+      ]
+    },
+    {
+      "id": "FORGE-AWS-010",
+      "title": "EC2 instance with public IP: {name}",
+      "aliases": [
+        "EC2 public IP assigned"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "INFO",
+      "description": "EC2 instance has a public IP address assigned, making it directly reachable from the internet.",
+      "impact": "Direct internet exposure increases the attack surface. If security groups or NACLs are misconfigured, services running on the instance become accessible to attackers worldwide.",
+      "cwe": [
+        "CWE-284"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": null,
+      "cvss_vector": "",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "",
+      "owasp_api": "",
+      "nist_csf2": [
+        "PR.AC-5"
+      ],
+      "nist_800_53": [
+        "SC-7"
+      ],
+      "nist_800_171": [],
+      "pci_dss_4": [
+        "1.3.1"
+      ],
+      "iso_27001": [],
+      "iso_27002": [],
+      "soc2": [],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [
+        {
+          "technique": "T1190",
+          "tactic": "Initial Access",
+          "name": "Exploit Public-Facing Application"
+        }
+      ],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "Remove the public IP if internet access is not required. Use a NAT gateway or VPN for outbound connectivity.",
+      "remediation_component": "Network",
+      "remediation_category": "Access Control",
+      "remediation_effort": "Moderate",
+      "validation_tools": [
+        "aws",
+        "forge"
+      ]
+    },
+    {
+      "id": "FORGE-AWS-011",
+      "title": "EBS volume unencrypted: {volume_id}",
+      "aliases": [
+        "EBS no encryption at rest"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "HIGH",
+      "description": "EBS volume is not encrypted at rest.",
+      "impact": "If the underlying EBS snapshot is shared, copied to another account, or the physical media is decommissioned, data is readable without decryption. Credentials, keys, and sensitive application data stored on the volume are exposed.",
+      "cwe": [
+        "CWE-311"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 6.2,
+      "cvss_vector": "CVSS:3.1/AV:L/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "A02:2021 Cryptographic Failures",
+      "owasp_api": "",
+      "nist_csf2": [
+        "PR.DS-1"
+      ],
+      "nist_800_53": [
+        "SC-28"
+      ],
+      "nist_800_171": [],
+      "pci_dss_4": [
+        "3.5.1"
+      ],
+      "iso_27001": [],
+      "iso_27002": [],
+      "soc2": [],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [
+        {
+          "technique": "T1530",
+          "tactic": "Collection",
+          "name": "Data from Cloud Storage"
+        }
+      ],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "Create an encrypted snapshot of the volume and replace it with an encrypted copy.",
+      "remediation_component": "Configuration",
+      "remediation_category": "Cryptography",
+      "remediation_effort": "Moderate",
+      "validation_tools": [
+        "aws",
+        "forge"
+      ]
+    },
+    {
+      "id": "FORGE-AWS-012",
+      "title": "Security group {sg_name} ({sg_id}) exposes sensitive ports to 0.0.0.0/0",
+      "aliases": [
+        "SG exposes sensitive ports to internet"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "HIGH",
+      "description": "Security group inbound rule allows 0.0.0.0/0 access to sensitive ports (SSH, RDP, databases, etc.).",
+      "impact": "Sensitive management and database ports are accessible from any IP address on the internet. Attackers can brute-force credentials, exploit known vulnerabilities, or exfiltrate data from exposed database services.",
+      "cwe": [
+        "CWE-284",
+        "CWE-732"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 7.5,
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "A01:2021 Broken Access Control",
+      "owasp_api": "",
+      "nist_csf2": [
+        "PR.AC-5"
+      ],
+      "nist_800_53": [
+        "AC-3",
+        "SC-7"
+      ],
+      "nist_800_171": [],
+      "pci_dss_4": [
+        "1.3.1",
+        "1.3.2"
+      ],
+      "iso_27001": [],
+      "iso_27002": [],
+      "soc2": [],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [
+        {
+          "technique": "T1190",
+          "tactic": "Initial Access",
+          "name": "Exploit Public-Facing Application"
+        },
+        {
+          "technique": "T1110",
+          "tactic": "Credential Access",
+          "name": "Brute Force"
+        }
+      ],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "Restrict the source CIDR to known IP ranges or use a bastion host / VPN.",
+      "remediation_component": "Network",
+      "remediation_category": "Access Control",
+      "remediation_effort": "Easy",
+      "validation_tools": [
+        "aws",
+        "forge"
+      ]
+    },
+    {
+      "id": "FORGE-AWS-013",
+      "title": "Security group {sg_name} ({sg_id}) allows all ports from 0.0.0.0/0",
+      "aliases": [
+        "SG allows all ports from any IP"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "CRITICAL",
+      "description": "Security group inbound rule allows unrestricted access (all ports, 0-65535) from any IP address.",
+      "impact": "Every service on every port of associated instances is exposed to the entire internet. This is functionally equivalent to no firewall and allows attackers to discover and exploit any running service.",
+      "cwe": [
+        "CWE-284",
+        "CWE-732"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 9.8,
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "A01:2021 Broken Access Control",
+      "owasp_api": "",
+      "nist_csf2": [
+        "PR.AC-5"
+      ],
+      "nist_800_53": [
+        "AC-3",
+        "SC-7"
+      ],
+      "nist_800_171": [],
+      "pci_dss_4": [
+        "1.3.1",
+        "1.3.2"
+      ],
+      "iso_27001": [],
+      "iso_27002": [],
+      "soc2": [],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [
+        {
+          "technique": "T1190",
+          "tactic": "Initial Access",
+          "name": "Exploit Public-Facing Application"
+        },
+        {
+          "technique": "T1046",
+          "tactic": "Discovery",
+          "name": "Network Service Discovery"
+        }
+      ],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "Remove the 0.0.0.0/0 all-port rule. Apply least-privilege rules scoped to specific ports and source CIDRs.",
+      "remediation_component": "Network",
+      "remediation_category": "Access Control",
+      "remediation_effort": "Easy",
+      "validation_tools": [
+        "aws",
+        "forge"
+      ]
+    },
+    {
+      "id": "FORGE-AWS-014",
+      "title": "EC2 instance IMDSv2 not enforced: {name}",
+      "aliases": [
+        "EC2 IMDSv1 enabled",
+        "EC2 instance metadata service v1"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "MEDIUM",
+      "description": "EC2 instance does not require IMDSv2 (HttpTokens != required). IMDSv1 is vulnerable to SSRF-based credential theft.",
+      "impact": "An attacker who achieves SSRF on the instance can query the IMDSv1 endpoint (http://169.254.169.254) to steal IAM role credentials, pivot to other AWS services, and escalate privileges across the account.",
+      "cwe": [
+        "CWE-918"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 6.5,
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "A10:2021 Server-Side Request Forgery",
+      "owasp_api": "",
+      "nist_csf2": [
+        "PR.AC-4"
+      ],
+      "nist_800_53": [
+        "AC-3",
+        "SC-7"
+      ],
+      "nist_800_171": [],
+      "pci_dss_4": [],
+      "iso_27001": [],
+      "iso_27002": [],
+      "soc2": [],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [
+        {
+          "technique": "T1552.005",
+          "tactic": "Credential Access",
+          "name": "Cloud Instance Metadata API"
+        },
+        {
+          "technique": "T1078.004",
+          "tactic": "Persistence",
+          "name": "Cloud Accounts"
+        }
+      ],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "aws ec2 modify-instance-metadata-options --instance-id <id> --http-tokens required --http-endpoint enabled",
+      "remediation_component": "Configuration",
+      "remediation_category": "Access Control",
+      "remediation_effort": "Easy",
+      "validation_tools": [
+        "aws",
+        "forge"
+      ]
+    },
+    {
+      "id": "FORGE-AWS-016",
+      "title": "EC2 instance user data contains secrets: {name}",
+      "aliases": [
+        "EC2 user data secrets exposure"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "CRITICAL",
+      "description": "EC2 instance user data contains secret-like environment variables or values (passwords, API keys, tokens). Anyone with ec2:DescribeInstanceAttribute permission can read these.",
+      "impact": "Secrets in user data are accessible to any IAM principal with DescribeInstanceAttribute permission and are logged in CloudTrail. Compromised credentials grant direct access to the systems or services they protect.",
+      "cwe": [
+        "CWE-798",
+        "CWE-200"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 9.0,
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:H/A:N",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "A02:2021 Cryptographic Failures",
+      "owasp_api": "",
+      "nist_csf2": [
+        "PR.DS-1"
+      ],
+      "nist_800_53": [
+        "IA-5(7)",
+        "SC-28"
+      ],
+      "nist_800_171": [],
+      "pci_dss_4": [
+        "2.2.7",
+        "8.3.2"
+      ],
+      "iso_27001": [],
+      "iso_27002": [],
+      "soc2": [],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [
+        {
+          "technique": "T1552.005",
+          "tactic": "Credential Access",
+          "name": "Cloud Instance Metadata API"
+        },
+        {
+          "technique": "T1552.001",
+          "tactic": "Credential Access",
+          "name": "Credentials In Files"
+        }
+      ],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "Move secrets to AWS Secrets Manager or SSM Parameter Store (SecureString). Reference them in user data by ARN/name, not value.",
+      "remediation_component": "Configuration",
+      "remediation_category": "Cryptography",
+      "remediation_effort": "Moderate",
+      "validation_tools": [
+        "aws",
+        "forge"
+      ]
+    },
+    {
+      "id": "FORGE-AWS-020",
+      "title": "IAM user without MFA: {username}",
+      "aliases": [
+        "IAM no MFA"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "HIGH",
+      "description": "IAM user has no MFA device configured.",
+      "impact": "Without MFA, a compromised password (phishing, credential stuffing, breach reuse) gives an attacker full access to the user's AWS permissions. MFA is the primary defense against credential-based account takeover.",
+      "cwe": [
+        "CWE-308"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 7.5,
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "A07:2021 Identification and Authentication Failures",
+      "owasp_api": "",
+      "nist_csf2": [
+        "PR.AC-7"
+      ],
+      "nist_800_53": [
+        "IA-2(1)",
+        "IA-2(2)"
+      ],
+      "nist_800_171": [
+        "3.5.3"
+      ],
+      "pci_dss_4": [
+        "8.4.2"
+      ],
+      "iso_27001": [],
+      "iso_27002": [],
+      "soc2": [],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [
+        {
+          "technique": "T1078.004",
+          "tactic": "Initial Access",
+          "name": "Cloud Accounts"
+        },
+        {
+          "technique": "T1110",
+          "tactic": "Credential Access",
+          "name": "Brute Force"
+        }
+      ],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "Enable virtual MFA (TOTP) or hardware MFA for this IAM user.",
+      "remediation_component": "Authentication",
+      "remediation_category": "Authentication",
+      "remediation_effort": "Easy",
+      "validation_tools": [
+        "aws",
+        "forge"
+      ]
+    },
+    {
+      "id": "FORGE-AWS-021",
+      "title": "IAM user has AdministratorAccess: {username}",
+      "aliases": [
+        "IAM direct admin policy"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "CRITICAL",
+      "description": "IAM user has the AdministratorAccess managed policy directly attached, granting unrestricted access to all AWS services and resources.",
+      "impact": "Compromise of this user's credentials grants the attacker full control of the AWS account: they can create resources, exfiltrate all data, disable logging, delete backups, and pivot to connected accounts.",
+      "cwe": [
+        "CWE-250",
+        "CWE-269"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 9.8,
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "A01:2021 Broken Access Control",
+      "owasp_api": "",
+      "nist_csf2": [
+        "PR.AC-4"
+      ],
+      "nist_800_53": [
+        "AC-6",
+        "AC-6(1)",
+        "AC-6(5)"
+      ],
+      "nist_800_171": [
+        "3.1.5"
+      ],
+      "pci_dss_4": [
+        "7.2.1"
+      ],
+      "iso_27001": [],
+      "iso_27002": [],
+      "soc2": [],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [
+        {
+          "technique": "T1078.004",
+          "tactic": "Persistence",
+          "name": "Cloud Accounts"
+        },
+        {
+          "technique": "T1098",
+          "tactic": "Persistence",
+          "name": "Account Manipulation"
+        }
+      ],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "Remove direct AdministratorAccess. Use role assumption with least-privilege policies and require MFA for role assumption.",
+      "remediation_component": "Authentication",
+      "remediation_category": "Access Control",
+      "remediation_effort": "Moderate",
+      "validation_tools": [
+        "aws",
+        "forge"
+      ]
+    },
+    {
+      "id": "FORGE-AWS-022",
+      "title": "IAM access key older than 90 days: {username}/{key_id}",
+      "aliases": [
+        "IAM stale access key"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "MEDIUM",
+      "description": "IAM access key is older than 90 days and should be rotated.",
+      "impact": "Long-lived access keys have a wider window for compromise through code leaks, log exposure, or insider threats. Stale keys often belong to forgotten integrations with overly broad permissions.",
+      "cwe": [
+        "CWE-324"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 5.3,
+      "cvss_vector": "",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "A07:2021 Identification and Authentication Failures",
+      "owasp_api": "",
+      "nist_csf2": [
+        "PR.AC-1"
+      ],
+      "nist_800_53": [
+        "IA-5(1)"
+      ],
+      "nist_800_171": [
+        "3.5.7"
+      ],
+      "pci_dss_4": [
+        "8.3.9"
+      ],
+      "iso_27001": [],
+      "iso_27002": [],
+      "soc2": [],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [
+        {
+          "technique": "T1078.004",
+          "tactic": "Initial Access",
+          "name": "Cloud Accounts"
+        }
+      ],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "Rotate the access key: create a new key, update consuming applications, then deactivate and delete the old key.",
+      "remediation_component": "Authentication",
+      "remediation_category": "Authentication",
+      "remediation_effort": "Moderate",
+      "validation_tools": [
+        "aws",
+        "forge"
+      ]
+    },
+    {
+      "id": "FORGE-AWS-023",
+      "title": "Root account has active access keys",
+      "aliases": [
+        "AWS root access keys"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "CRITICAL",
+      "description": "The AWS root account has access keys configured. Root keys should never exist — they grant unrestricted, irrevocable access.",
+      "impact": "Root credentials cannot be scoped by IAM policies or SCPs. Compromise gives an attacker absolute control: they can close the account, change billing, bypass all IAM controls, and destroy all resources.",
+      "cwe": [
+        "CWE-250",
+        "CWE-269"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 10.0,
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "A01:2021 Broken Access Control",
+      "owasp_api": "",
+      "nist_csf2": [
+        "PR.AC-4"
+      ],
+      "nist_800_53": [
+        "AC-6(1)",
+        "AC-6(5)"
+      ],
+      "nist_800_171": [
+        "3.1.5"
+      ],
+      "pci_dss_4": [
+        "7.2.1",
+        "8.6.1"
+      ],
+      "iso_27001": [],
+      "iso_27002": [],
+      "soc2": [],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [
+        {
+          "technique": "T1078.004",
+          "tactic": "Initial Access",
+          "name": "Cloud Accounts"
+        },
+        {
+          "technique": "T1098",
+          "tactic": "Persistence",
+          "name": "Account Manipulation"
+        }
+      ],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "Delete all root account access keys immediately. Use IAM users and roles for all programmatic access.",
+      "remediation_component": "Authentication",
+      "remediation_category": "Access Control",
+      "remediation_effort": "Easy",
+      "validation_tools": [
+        "aws",
+        "forge"
+      ]
+    },
+    {
+      "id": "FORGE-AWS-024",
+      "title": "IAM password policy does not meet complexity requirements",
+      "aliases": [
+        "IAM weak password policy",
+        "IAM password policy not configured"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "MEDIUM",
+      "description": "The IAM account password policy is absent or does not enforce adequate complexity (minimum length >= 14, symbols, numbers, upper and lowercase).",
+      "impact": "Weak password policies allow users to set easily guessable passwords, increasing susceptibility to brute-force and credential-stuffing attacks against the AWS console.",
+      "cwe": [
+        "CWE-521"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 5.3,
+      "cvss_vector": "",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "A07:2021 Identification and Authentication Failures",
+      "owasp_api": "",
+      "nist_csf2": [
+        "PR.AC-1"
+      ],
+      "nist_800_53": [
+        "IA-5(1)"
+      ],
+      "nist_800_171": [
+        "3.5.7"
+      ],
+      "pci_dss_4": [
+        "8.3.6"
+      ],
+      "iso_27001": [],
+      "iso_27002": [],
+      "soc2": [],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [
+        {
+          "technique": "T1110",
+          "tactic": "Credential Access",
+          "name": "Brute Force"
+        }
+      ],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "aws iam update-account-password-policy --minimum-password-length 14 --require-symbols --require-numbers --require-uppercase-characters --require-lowercase-characters",
+      "remediation_component": "Authentication",
+      "remediation_category": "Authentication",
+      "remediation_effort": "Easy",
+      "validation_tools": [
+        "aws",
+        "forge"
+      ]
+    },
+    {
+      "id": "FORGE-AWS-025",
+      "title": "IAM server certificate expired: {cert_name}",
+      "aliases": [
+        "IAM expired server certificate"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "CRITICAL",
+      "description": "IAM server certificate has expired.",
+      "impact": "Expired certificates cause TLS errors or silent fallback to unencrypted connections. Services relying on the certificate may become unavailable or transmit data in plaintext.",
+      "cwe": [
+        "CWE-295",
+        "CWE-324"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 7.4,
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:L/A:N",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "A02:2021 Cryptographic Failures",
+      "owasp_api": "",
+      "nist_csf2": [
+        "PR.DS-2"
+      ],
+      "nist_800_53": [
+        "SC-8",
+        "SC-17"
+      ],
+      "nist_800_171": [],
+      "pci_dss_4": [
+        "4.2.1"
+      ],
+      "iso_27001": [],
+      "iso_27002": [],
+      "soc2": [],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [
+        {
+          "technique": "T1557",
+          "tactic": "Credential Access",
+          "name": "Adversary-in-the-Middle"
+        }
+      ],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "Replace or delete the expired IAM server certificate. Migrate to ACM for automatic renewal where possible.",
+      "remediation_component": "Configuration",
+      "remediation_category": "Cryptography",
+      "remediation_effort": "Easy",
+      "validation_tools": [
+        "aws",
+        "forge"
+      ]
+    },
+    {
+      "id": "FORGE-AWS-030",
+      "title": "RDS instance publicly accessible: {db_id}",
+      "aliases": [
+        "RDS public endpoint"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "HIGH",
+      "description": "RDS instance is configured as publicly accessible, meaning its endpoint resolves to a public IP.",
+      "impact": "The database is reachable from the internet. An attacker can attempt authentication brute-force, exploit known database vulnerabilities, or exfiltrate data if credentials are weak or leaked.",
+      "cwe": [
+        "CWE-284"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 7.5,
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "A01:2021 Broken Access Control",
+      "owasp_api": "",
+      "nist_csf2": [
+        "PR.AC-5"
+      ],
+      "nist_800_53": [
+        "AC-3",
+        "SC-7"
+      ],
+      "nist_800_171": [],
+      "pci_dss_4": [
+        "1.3.1"
+      ],
+      "iso_27001": [],
+      "iso_27002": [],
+      "soc2": [],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [
+        {
+          "technique": "T1190",
+          "tactic": "Initial Access",
+          "name": "Exploit Public-Facing Application"
+        },
+        {
+          "technique": "T1110",
+          "tactic": "Credential Access",
+          "name": "Brute Force"
+        }
+      ],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "Disable public accessibility: aws rds modify-db-instance --db-instance-identifier <id> --no-publicly-accessible",
+      "remediation_component": "Network",
+      "remediation_category": "Access Control",
+      "remediation_effort": "Easy",
+      "validation_tools": [
+        "aws",
+        "forge"
+      ]
+    },
+    {
+      "id": "FORGE-AWS-031",
+      "title": "RDS instance unencrypted: {db_id}",
+      "aliases": [
+        "RDS no encryption at rest"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "HIGH",
+      "description": "RDS storage encryption is not enabled.",
+      "impact": "Database data at rest is unencrypted. If snapshots are shared, copied, or the underlying storage is accessed, all data (including credentials and PII) is readable in plaintext.",
+      "cwe": [
+        "CWE-311"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 6.2,
+      "cvss_vector": "CVSS:3.1/AV:L/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "A02:2021 Cryptographic Failures",
+      "owasp_api": "",
+      "nist_csf2": [
+        "PR.DS-1"
+      ],
+      "nist_800_53": [
+        "SC-28"
+      ],
+      "nist_800_171": [],
+      "pci_dss_4": [
+        "3.5.1"
+      ],
+      "iso_27001": [],
+      "iso_27002": [],
+      "soc2": [],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [
+        {
+          "technique": "T1530",
+          "tactic": "Collection",
+          "name": "Data from Cloud Storage"
+        }
+      ],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "Enable encryption at rest. For existing instances: create an encrypted snapshot, then restore from it.",
+      "remediation_component": "Configuration",
+      "remediation_category": "Cryptography",
+      "remediation_effort": "Significant",
+      "validation_tools": [
+        "aws",
+        "forge"
+      ]
+    },
+    {
+      "id": "FORGE-AWS-032",
+      "title": "RDS instance no automated backups: {db_id}",
+      "aliases": [
+        "RDS backups disabled"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "MEDIUM",
+      "description": "Automated backups are disabled on the RDS instance (retention period is 0 days).",
+      "impact": "Without automated backups, data loss from accidental deletion, corruption, or ransomware is permanent. Point-in-time recovery is unavailable.",
+      "cwe": [
+        "CWE-693"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 5.3,
+      "cvss_vector": "",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "",
+      "owasp_api": "",
+      "nist_csf2": [
+        "PR.IP-4"
+      ],
+      "nist_800_53": [
+        "CP-9"
+      ],
+      "nist_800_171": [],
+      "pci_dss_4": [],
+      "iso_27001": [],
+      "iso_27002": [],
+      "soc2": [],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [
+        {
+          "technique": "T1485",
+          "tactic": "Impact",
+          "name": "Data Destruction"
+        }
+      ],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "Enable automated backups with an appropriate retention period (minimum 7 days recommended).",
+      "remediation_component": "Configuration",
+      "remediation_category": "Configuration",
+      "remediation_effort": "Easy",
+      "validation_tools": [
+        "aws",
+        "forge"
+      ]
+    },
+    {
+      "id": "FORGE-AWS-033",
+      "title": "RDS instance deletion protection disabled: {db_id}",
+      "aliases": [
+        "RDS no deletion protection"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "MEDIUM",
+      "description": "Deletion protection is disabled on the RDS instance — the database can be deleted without safeguard.",
+      "impact": "An attacker or careless operator with sufficient IAM permissions can delete the production database with a single API call, causing total data loss and service outage.",
+      "cwe": [
+        "CWE-693"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 5.3,
+      "cvss_vector": "",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "",
+      "owasp_api": "",
+      "nist_csf2": [
+        "PR.IP-4"
+      ],
+      "nist_800_53": [
+        "CP-9",
+        "CM-3"
+      ],
+      "nist_800_171": [],
+      "pci_dss_4": [],
+      "iso_27001": [],
+      "iso_27002": [],
+      "soc2": [],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [
+        {
+          "technique": "T1485",
+          "tactic": "Impact",
+          "name": "Data Destruction"
+        }
+      ],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "aws rds modify-db-instance --db-instance-identifier <id> --deletion-protection",
+      "remediation_component": "Configuration",
+      "remediation_category": "Configuration",
+      "remediation_effort": "Easy",
+      "validation_tools": [
+        "aws",
+        "forge"
+      ]
+    },
+    {
+      "id": "FORGE-AWS-034",
+      "title": "RDS instance not Multi-AZ: {db_id}",
+      "aliases": [
+        "RDS single-AZ deployment"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "MEDIUM",
+      "description": "Multi-AZ deployment is not enabled — there is no standby replica for automatic failover.",
+      "impact": "A single availability zone failure causes a full database outage with no automatic failover. Recovery time depends on snapshot restore, which can take hours for large databases.",
+      "cwe": [
+        "CWE-693"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 3.7,
+      "cvss_vector": "",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "",
+      "owasp_api": "",
+      "nist_csf2": [
+        "PR.IP-4"
+      ],
+      "nist_800_53": [
+        "CP-7"
+      ],
+      "nist_800_171": [],
+      "pci_dss_4": [],
+      "iso_27001": [],
+      "iso_27002": [],
+      "soc2": [],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "aws rds modify-db-instance --db-instance-identifier <id> --multi-az",
+      "remediation_component": "Configuration",
+      "remediation_category": "Configuration",
+      "remediation_effort": "Moderate",
+      "validation_tools": [
+        "aws",
+        "forge"
+      ]
+    },
+    {
+      "id": "FORGE-AWS-040",
+      "title": "No CloudTrail trails configured",
+      "aliases": [
+        "CloudTrail not enabled"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "HIGH",
+      "description": "No CloudTrail trails exist in this region/account. API activity is not logged.",
+      "impact": "Without CloudTrail, all AWS API calls go unrecorded. Attackers can operate undetected — creating users, exfiltrating data, modifying resources — with no audit trail for incident response.",
+      "cwe": [
+        "CWE-778"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 7.5,
+      "cvss_vector": "",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "A09:2021 Security Logging and Monitoring Failures",
+      "owasp_api": "",
+      "nist_csf2": [
+        "DE.AE-3",
+        "DE.CM-1"
+      ],
+      "nist_800_53": [
+        "AU-2",
+        "AU-3",
+        "AU-12"
+      ],
+      "nist_800_171": [
+        "3.3.1"
+      ],
+      "pci_dss_4": [
+        "10.2.1"
+      ],
+      "iso_27001": [],
+      "iso_27002": [],
+      "soc2": [],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [
+        {
+          "technique": "T1562.008",
+          "tactic": "Defense Evasion",
+          "name": "Disable or Modify Cloud Logs"
+        }
+      ],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "Create a multi-region CloudTrail trail logging to a dedicated, encrypted S3 bucket.",
+      "remediation_component": "Configuration",
+      "remediation_category": "Logging",
+      "remediation_effort": "Moderate",
+      "validation_tools": [
+        "aws",
+        "forge"
+      ]
+    },
+    {
+      "id": "FORGE-AWS-041",
+      "title": "CloudTrail not actively logging: {trail_name}",
+      "aliases": [
+        "CloudTrail logging stopped"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "HIGH",
+      "description": "CloudTrail trail exists but is not actively logging.",
+      "impact": "The trail is configured but disabled, so API calls are not being recorded. An attacker may have stopped logging to cover their tracks, or operational drift disabled it. All activity during the gap is invisible.",
+      "cwe": [
+        "CWE-778"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 7.5,
+      "cvss_vector": "",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "A09:2021 Security Logging and Monitoring Failures",
+      "owasp_api": "",
+      "nist_csf2": [
+        "DE.AE-3",
+        "DE.CM-1"
+      ],
+      "nist_800_53": [
+        "AU-2",
+        "AU-12"
+      ],
+      "nist_800_171": [
+        "3.3.1"
+      ],
+      "pci_dss_4": [
+        "10.2.1"
+      ],
+      "iso_27001": [],
+      "iso_27002": [],
+      "soc2": [],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [
+        {
+          "technique": "T1562.008",
+          "tactic": "Defense Evasion",
+          "name": "Disable or Modify Cloud Logs"
+        }
+      ],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "aws cloudtrail start-logging --name <trail>",
+      "remediation_component": "Configuration",
+      "remediation_category": "Logging",
+      "remediation_effort": "Easy",
+      "validation_tools": [
+        "aws",
+        "forge"
+      ]
+    },
+    {
+      "id": "FORGE-AWS-042",
+      "title": "CloudTrail not encrypted with KMS: {trail_name}",
+      "aliases": [
+        "CloudTrail no KMS encryption"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "MEDIUM",
+      "description": "CloudTrail trail log files are not encrypted with a customer-managed KMS key.",
+      "impact": "Without KMS encryption, log file integrity depends solely on S3 bucket security. A customer-managed KMS key provides an additional layer of access control and audit via KMS key policies.",
+      "cwe": [
+        "CWE-311"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 4.3,
+      "cvss_vector": "",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "A02:2021 Cryptographic Failures",
+      "owasp_api": "",
+      "nist_csf2": [
+        "PR.DS-1"
+      ],
+      "nist_800_53": [
+        "SC-28",
+        "AU-9"
+      ],
+      "nist_800_171": [],
+      "pci_dss_4": [
+        "3.5.1"
+      ],
+      "iso_27001": [],
+      "iso_27002": [],
+      "soc2": [],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "aws cloudtrail update-trail --name <trail> --kms-key-id <key-arn>",
+      "remediation_component": "Configuration",
+      "remediation_category": "Cryptography",
+      "remediation_effort": "Easy",
+      "validation_tools": [
+        "aws",
+        "forge"
+      ]
+    },
+    {
+      "id": "FORGE-AWS-043",
+      "title": "CloudTrail not integrated with CloudWatch Logs: {trail_name}",
+      "aliases": [
+        "CloudTrail no CloudWatch Logs"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "LOW",
+      "description": "CloudTrail trail does not deliver events to CloudWatch Logs for real-time alerting.",
+      "impact": "Without CloudWatch Logs integration, security events (root login, unauthorized API calls, resource deletions) cannot trigger real-time alarms. Detection and response are delayed until manual log review.",
+      "cwe": [
+        "CWE-778"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 3.7,
+      "cvss_vector": "",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "A09:2021 Security Logging and Monitoring Failures",
+      "owasp_api": "",
+      "nist_csf2": [
+        "DE.AE-3"
+      ],
+      "nist_800_53": [
+        "AU-6",
+        "SI-4"
+      ],
+      "nist_800_171": [],
+      "pci_dss_4": [
+        "10.6.1"
+      ],
+      "iso_27001": [],
+      "iso_27002": [],
+      "soc2": [],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "Configure a CloudWatch Logs log group and IAM role for the trail to enable real-time event delivery.",
+      "remediation_component": "Configuration",
+      "remediation_category": "Logging",
+      "remediation_effort": "Moderate",
+      "validation_tools": [
+        "aws",
+        "forge"
+      ]
+    },
+    {
+      "id": "FORGE-AWS-050",
+      "title": "KMS key rotation disabled: {key_id}",
+      "aliases": [
+        "KMS no automatic rotation"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "MEDIUM",
+      "description": "Automatic key rotation is not enabled for this customer-managed KMS key.",
+      "impact": "Without rotation, the same key material protects data indefinitely. If the key is ever compromised, all data encrypted since key creation is at risk rather than just the current rotation period.",
+      "cwe": [
+        "CWE-324"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 4.3,
+      "cvss_vector": "",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "A02:2021 Cryptographic Failures",
+      "owasp_api": "",
+      "nist_csf2": [
+        "PR.DS-1"
+      ],
+      "nist_800_53": [
+        "SC-12(1)"
+      ],
+      "nist_800_171": [],
+      "pci_dss_4": [
+        "3.7.4"
+      ],
+      "iso_27001": [],
+      "iso_27002": [],
+      "soc2": [],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "aws kms enable-key-rotation --key-id <key-id>",
+      "remediation_component": "Configuration",
+      "remediation_category": "Cryptography",
+      "remediation_effort": "Easy",
+      "validation_tools": [
+        "aws",
+        "forge"
+      ]
+    },
+    {
+      "id": "FORGE-AWS-060",
+      "title": "Lambda function environment contains secrets: {fn_name}",
+      "aliases": [
+        "Lambda secrets in env vars"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "CRITICAL",
+      "description": "Lambda function has environment variables with secret-like names (passwords, API keys, tokens). These are visible to anyone with lambda:GetFunction or lambda:GetFunctionConfiguration permission.",
+      "impact": "Secrets in Lambda environment variables are stored in plaintext and accessible via the AWS API. Any principal with read access to the function configuration can extract credentials and pivot to the systems they protect.",
+      "cwe": [
+        "CWE-798",
+        "CWE-200"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 9.0,
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:H/A:N",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "A02:2021 Cryptographic Failures",
+      "owasp_api": "",
+      "nist_csf2": [
+        "PR.DS-1"
+      ],
+      "nist_800_53": [
+        "IA-5(7)",
+        "SC-28"
+      ],
+      "nist_800_171": [],
+      "pci_dss_4": [
+        "2.2.7",
+        "8.3.2"
+      ],
+      "iso_27001": [],
+      "iso_27002": [],
+      "soc2": [],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [
+        {
+          "technique": "T1552.001",
+          "tactic": "Credential Access",
+          "name": "Credentials In Files"
+        },
+        {
+          "technique": "T1078.004",
+          "tactic": "Initial Access",
+          "name": "Cloud Accounts"
+        }
+      ],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "Move secrets to AWS Secrets Manager or SSM Parameter Store (SecureString) and reference them at runtime.",
+      "remediation_component": "Configuration",
+      "remediation_category": "Cryptography",
+      "remediation_effort": "Moderate",
+      "validation_tools": [
+        "aws",
+        "forge"
+      ]
+    },
+    {
+      "id": "FORGE-AWS-061",
+      "title": "Lambda function publicly invokable: {fn_name}",
+      "aliases": [
+        "Lambda Principal=* resource policy"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "CRITICAL",
+      "description": "Lambda function has a resource-based policy granting Principal=* with no Condition — anyone can invoke this function.",
+      "impact": "Any AWS account or anonymous caller can invoke the function, potentially triggering unintended actions, exhausting concurrency limits, incurring costs, or exploiting vulnerabilities in the function code.",
+      "cwe": [
+        "CWE-284",
+        "CWE-732"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 9.8,
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "A01:2021 Broken Access Control",
+      "owasp_api": "",
+      "nist_csf2": [
+        "PR.AC-4"
+      ],
+      "nist_800_53": [
+        "AC-3",
+        "AC-6"
+      ],
+      "nist_800_171": [],
+      "pci_dss_4": [
+        "7.2.1"
+      ],
+      "iso_27001": [],
+      "iso_27002": [],
+      "soc2": [],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [
+        {
+          "technique": "T1190",
+          "tactic": "Initial Access",
+          "name": "Exploit Public-Facing Application"
+        },
+        {
+          "technique": "T1648",
+          "tactic": "Execution",
+          "name": "Serverless Execution"
+        }
+      ],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "Restrict the resource policy Principal to specific AWS accounts or services, or add a Condition key (e.g., aws:SourceArn).",
+      "remediation_component": "Configuration",
+      "remediation_category": "Access Control",
+      "remediation_effort": "Easy",
+      "validation_tools": [
+        "aws",
+        "forge"
+      ]
+    },
+    {
+      "id": "FORGE-AWS-062",
+      "title": "Lambda function URL without authentication: {fn_name}",
+      "aliases": [
+        "Lambda function URL AuthType=NONE"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "HIGH",
+      "description": "Lambda function has a function URL with AuthType=NONE — anyone on the internet can invoke it without credentials.",
+      "impact": "The function URL is a public HTTPS endpoint with no authentication. Attackers can invoke the function directly, abuse its functionality, cause cost spikes, or exploit vulnerabilities in the handler code.",
+      "cwe": [
+        "CWE-306"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 7.5,
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "A07:2021 Identification and Authentication Failures",
+      "owasp_api": "",
+      "nist_csf2": [
+        "PR.AC-7"
+      ],
+      "nist_800_53": [
+        "AC-3",
+        "IA-2"
+      ],
+      "nist_800_171": [],
+      "pci_dss_4": [
+        "7.2.1"
+      ],
+      "iso_27001": [],
+      "iso_27002": [],
+      "soc2": [],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [
+        {
+          "technique": "T1648",
+          "tactic": "Execution",
+          "name": "Serverless Execution"
+        }
+      ],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "Set AuthType to AWS_IAM on the function URL, or add a CloudFront distribution with WAF in front.",
+      "remediation_component": "Authentication",
+      "remediation_category": "Authentication",
+      "remediation_effort": "Easy",
+      "validation_tools": [
+        "aws",
+        "forge"
+      ]
+    },
+    {
+      "id": "FORGE-AWS-063",
+      "title": "Lambda function uses deprecated runtime: {fn_name} ({runtime})",
+      "aliases": [
+        "Lambda deprecated runtime"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "MEDIUM",
+      "description": "Lambda function runs on a deprecated runtime that no longer receives security patches.",
+      "impact": "Deprecated runtimes accumulate unpatched vulnerabilities. An attacker exploiting a known runtime vulnerability can achieve code execution within the Lambda execution environment and access the function's IAM role credentials.",
+      "cwe": [
+        "CWE-1104"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 5.3,
+      "cvss_vector": "",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "A06:2021 Vulnerable and Outdated Components",
+      "owasp_api": "",
+      "nist_csf2": [
+        "PR.IP-12"
+      ],
+      "nist_800_53": [
+        "SI-2",
+        "SA-22"
+      ],
+      "nist_800_171": [],
+      "pci_dss_4": [
+        "6.3.3"
+      ],
+      "iso_27001": [],
+      "iso_27002": [],
+      "soc2": [],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [
+        {
+          "technique": "T1648",
+          "tactic": "Execution",
+          "name": "Serverless Execution"
+        }
+      ],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "Upgrade the function runtime to the latest supported version for the language.",
+      "remediation_component": "Configuration",
+      "remediation_category": "Configuration",
+      "remediation_effort": "Moderate",
+      "validation_tools": [
+        "aws",
+        "forge"
+      ]
+    },
+    {
+      "id": "FORGE-AWS-070",
+      "title": "VPC without flow logs: {vpc_id}",
+      "aliases": [
+        "VPC flow logs disabled"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "MEDIUM",
+      "description": "VPC does not have VPC Flow Logs enabled — network traffic is not auditable.",
+      "impact": "Without flow logs, network-level anomalies (lateral movement, data exfiltration, port scanning) cannot be detected or investigated. Incident response lacks network forensic evidence.",
+      "cwe": [
+        "CWE-778"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 4.3,
+      "cvss_vector": "",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "A09:2021 Security Logging and Monitoring Failures",
+      "owasp_api": "",
+      "nist_csf2": [
+        "DE.AE-3",
+        "DE.CM-1"
+      ],
+      "nist_800_53": [
+        "AU-2",
+        "AU-12",
+        "SI-4"
+      ],
+      "nist_800_171": [
+        "3.3.1"
+      ],
+      "pci_dss_4": [
+        "10.2.1"
+      ],
+      "iso_27001": [],
+      "iso_27002": [],
+      "soc2": [],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [
+        {
+          "technique": "T1562.008",
+          "tactic": "Defense Evasion",
+          "name": "Disable or Modify Cloud Logs"
+        }
+      ],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "aws ec2 create-flow-logs --resource-type VPC --resource-ids <vpc-id> --traffic-type ALL --log-destination-type cloud-watch-logs",
+      "remediation_component": "Configuration",
+      "remediation_category": "Logging",
+      "remediation_effort": "Easy",
+      "validation_tools": [
+        "aws",
+        "forge"
+      ]
+    },
+    {
+      "id": "FORGE-AWS-071",
+      "title": "Default security group has inbound rules: {sg_id}",
+      "aliases": [
+        "Default SG with rules"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "HIGH",
+      "description": "The default security group has non-empty inbound rules. Resources assigned to the default SG inherit these rules.",
+      "impact": "Resources accidentally placed in the default security group inherit permissive inbound rules. This is a common misconfiguration that silently exposes new resources to unintended network access.",
+      "cwe": [
+        "CWE-284",
+        "CWE-1188"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 6.5,
+      "cvss_vector": "",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "A05:2021 Security Misconfiguration",
+      "owasp_api": "",
+      "nist_csf2": [
+        "PR.AC-5"
+      ],
+      "nist_800_53": [
+        "AC-3",
+        "SC-7"
+      ],
+      "nist_800_171": [],
+      "pci_dss_4": [
+        "1.3.1"
+      ],
+      "iso_27001": [],
+      "iso_27002": [],
+      "soc2": [],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [
+        {
+          "technique": "T1046",
+          "tactic": "Discovery",
+          "name": "Network Service Discovery"
+        }
+      ],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "Remove all inbound and outbound rules from the default security group in every VPC.",
+      "remediation_component": "Network",
+      "remediation_category": "Access Control",
+      "remediation_effort": "Easy",
+      "validation_tools": [
+        "aws",
+        "forge"
+      ]
+    },
+    {
+      "id": "FORGE-AWS-080",
+      "title": "EFS file system publicly accessible: {fs_name}",
+      "aliases": [
+        "EFS Principal=* policy"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "CRITICAL",
+      "description": "EFS file system has a resource policy granting Principal=* — any AWS principal can mount and access the filesystem.",
+      "impact": "Any AWS account can mount the EFS share and read or write all files. Sensitive data, configuration files, and application code on the filesystem are fully exposed.",
+      "cwe": [
+        "CWE-284",
+        "CWE-732"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 9.1,
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "A01:2021 Broken Access Control",
+      "owasp_api": "",
+      "nist_csf2": [
+        "PR.AC-4",
+        "PR.DS-1"
+      ],
+      "nist_800_53": [
+        "AC-3",
+        "AC-6"
+      ],
+      "nist_800_171": [],
+      "pci_dss_4": [
+        "7.2.1"
+      ],
+      "iso_27001": [],
+      "iso_27002": [],
+      "soc2": [],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [
+        {
+          "technique": "T1530",
+          "tactic": "Collection",
+          "name": "Data from Cloud Storage"
+        }
+      ],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "Restrict the EFS resource policy to specific AWS accounts, VPCs, or IAM roles.",
+      "remediation_component": "Configuration",
+      "remediation_category": "Access Control",
+      "remediation_effort": "Easy",
+      "validation_tools": [
+        "aws",
+        "forge"
+      ]
+    },
+    {
+      "id": "FORGE-AWS-090",
+      "title": "SNS topic not encrypted with KMS: {topic_name}",
+      "aliases": [
+        "SNS no server-side encryption"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "HIGH",
+      "description": "SNS topic does not use a KMS key for server-side encryption.",
+      "impact": "Messages published to the topic are stored unencrypted. If the SNS service is compromised or messages are intercepted, sensitive notification payloads (alerts, PII, tokens) are readable in plaintext.",
+      "cwe": [
+        "CWE-311"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 6.5,
+      "cvss_vector": "",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "A02:2021 Cryptographic Failures",
+      "owasp_api": "",
+      "nist_csf2": [
+        "PR.DS-1"
+      ],
+      "nist_800_53": [
+        "SC-28"
+      ],
+      "nist_800_171": [],
+      "pci_dss_4": [
+        "3.5.1"
+      ],
+      "iso_27001": [],
+      "iso_27002": [],
+      "soc2": [],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [
+        {
+          "technique": "T1530",
+          "tactic": "Collection",
+          "name": "Data from Cloud Storage"
+        }
+      ],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "aws sns set-topic-attributes --topic-arn <arn> --attribute-name KmsMasterKeyId --attribute-value <key-id>",
+      "remediation_component": "Configuration",
+      "remediation_category": "Cryptography",
+      "remediation_effort": "Easy",
+      "validation_tools": [
+        "aws",
+        "forge"
+      ]
+    },
+    {
+      "id": "FORGE-AWS-091",
+      "title": "SNS topic publicly accessible: {topic_name}",
+      "aliases": [
+        "SNS public access policy"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "HIGH",
+      "description": "SNS topic has a resource policy granting Principal=* without a Condition restricting access.",
+      "impact": "Any AWS account or service can publish to or subscribe to the topic. Attackers can inject malicious messages, subscribe to exfiltrate notification data, or abuse the topic for spam/phishing delivery.",
+      "cwe": [
+        "CWE-284",
+        "CWE-732"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 7.5,
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "A01:2021 Broken Access Control",
+      "owasp_api": "",
+      "nist_csf2": [
+        "PR.AC-4"
+      ],
+      "nist_800_53": [
+        "AC-3",
+        "AC-6"
+      ],
+      "nist_800_171": [],
+      "pci_dss_4": [
+        "7.2.1"
+      ],
+      "iso_27001": [],
+      "iso_27002": [],
+      "soc2": [],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [
+        {
+          "technique": "T1530",
+          "tactic": "Collection",
+          "name": "Data from Cloud Storage"
+        }
+      ],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "Restrict the SNS topic policy Principal to specific AWS accounts, services, or add a Condition key.",
+      "remediation_component": "Configuration",
+      "remediation_category": "Access Control",
+      "remediation_effort": "Easy",
+      "validation_tools": [
+        "aws",
+        "forge"
+      ]
+    },
+    {
+      "id": "FORGE-AWS-092",
+      "title": "SQS queue not encrypted: {queue_name}",
+      "aliases": [
+        "SQS no encryption"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "MEDIUM",
+      "description": "SQS queue has neither KMS-managed nor SQS-managed server-side encryption enabled.",
+      "impact": "Messages in the queue are stored unencrypted. If an attacker gains queue read access, message payloads (which may contain PII, tokens, or commands) are readable in plaintext.",
+      "cwe": [
+        "CWE-311"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 5.3,
+      "cvss_vector": "",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "A02:2021 Cryptographic Failures",
+      "owasp_api": "",
+      "nist_csf2": [
+        "PR.DS-1"
+      ],
+      "nist_800_53": [
+        "SC-28"
+      ],
+      "nist_800_171": [],
+      "pci_dss_4": [
+        "3.5.1"
+      ],
+      "iso_27001": [],
+      "iso_27002": [],
+      "soc2": [],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [
+        {
+          "technique": "T1530",
+          "tactic": "Collection",
+          "name": "Data from Cloud Storage"
+        }
+      ],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "aws sqs set-queue-attributes --queue-url <url> --attributes SqsManagedSseEnabled=true",
+      "remediation_component": "Configuration",
+      "remediation_category": "Cryptography",
+      "remediation_effort": "Easy",
+      "validation_tools": [
+        "aws",
+        "forge"
+      ]
+    },
+    {
+      "id": "FORGE-AWS-093",
+      "title": "SQS queue publicly accessible: {queue_name}",
+      "aliases": [
+        "SQS public access policy"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "CRITICAL",
+      "description": "SQS queue has a resource policy granting Principal=* without a Condition restricting access.",
+      "impact": "Any AWS account can send, receive, and delete messages from the queue. Attackers can inject poisoned messages, steal queued data, or disrupt processing by purging the queue.",
+      "cwe": [
+        "CWE-284",
+        "CWE-732"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 9.1,
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "A01:2021 Broken Access Control",
+      "owasp_api": "",
+      "nist_csf2": [
+        "PR.AC-4"
+      ],
+      "nist_800_53": [
+        "AC-3",
+        "AC-6"
+      ],
+      "nist_800_171": [],
+      "pci_dss_4": [
+        "7.2.1"
+      ],
+      "iso_27001": [],
+      "iso_27002": [],
+      "soc2": [],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [
+        {
+          "technique": "T1530",
+          "tactic": "Collection",
+          "name": "Data from Cloud Storage"
+        },
+        {
+          "technique": "T1485",
+          "tactic": "Impact",
+          "name": "Data Destruction"
+        }
+      ],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "Restrict the SQS queue policy Principal to specific AWS accounts or services.",
+      "remediation_component": "Configuration",
+      "remediation_category": "Access Control",
+      "remediation_effort": "Easy",
+      "validation_tools": [
+        "aws",
+        "forge"
+      ]
+    },
+    {
+      "id": "FORGE-AWS-100",
+      "title": "GuardDuty not enabled",
+      "aliases": [
+        "Amazon GuardDuty disabled"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "MEDIUM",
+      "description": "Amazon GuardDuty is not enabled in this region — threat detection for the account is absent.",
+      "impact": "Without GuardDuty, automated threat detection (compromised credentials, cryptocurrency mining, data exfiltration patterns, unusual API behavior) is not active. Attacks proceed undetected.",
+      "cwe": [
+        "CWE-778"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 5.3,
+      "cvss_vector": "",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "A09:2021 Security Logging and Monitoring Failures",
+      "owasp_api": "",
+      "nist_csf2": [
+        "DE.CM-1",
+        "DE.AE-2"
+      ],
+      "nist_800_53": [
+        "SI-4",
+        "AU-6"
+      ],
+      "nist_800_171": [],
+      "pci_dss_4": [
+        "11.5.1"
+      ],
+      "iso_27001": [],
+      "iso_27002": [],
+      "soc2": [],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [
+        {
+          "technique": "T1562.008",
+          "tactic": "Defense Evasion",
+          "name": "Disable or Modify Cloud Logs"
+        }
+      ],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "aws guardduty create-detector --enable",
+      "remediation_component": "Configuration",
+      "remediation_category": "Logging",
+      "remediation_effort": "Easy",
+      "validation_tools": [
+        "aws",
+        "forge"
+      ]
+    },
+    {
+      "id": "FORGE-AWS-101",
+      "title": "Security Hub not enabled",
+      "aliases": [
+        "AWS Security Hub disabled"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "MEDIUM",
+      "description": "AWS Security Hub is not enabled in this region — centralized security posture management is absent.",
+      "impact": "Without Security Hub, there is no unified view of security findings across AWS services. Compliance checks (CIS Benchmarks, PCI DSS, AWS Foundational Best Practices) do not run, and cross-service correlation is unavailable.",
+      "cwe": [
+        "CWE-778"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 5.3,
+      "cvss_vector": "",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "A09:2021 Security Logging and Monitoring Failures",
+      "owasp_api": "",
+      "nist_csf2": [
+        "DE.CM-1",
+        "ID.RA-1"
+      ],
+      "nist_800_53": [
+        "SI-4",
+        "RA-5"
+      ],
+      "nist_800_171": [],
+      "pci_dss_4": [
+        "11.5.1"
+      ],
+      "iso_27001": [],
+      "iso_27002": [],
+      "soc2": [],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "aws securityhub enable-security-hub",
+      "remediation_component": "Configuration",
+      "remediation_category": "Logging",
+      "remediation_effort": "Easy",
+      "validation_tools": [
+        "aws",
+        "forge"
+      ]
+    },
+    {
+      "id": "FORGE-AWS-110",
+      "title": "ACM certificate expired or expiring soon: {domain}",
+      "aliases": [
+        "ACM certificate expired",
+        "ACM certificate expiring soon"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "HIGH",
+      "description": "ACM certificate has expired or will expire within 30 days.",
+      "impact": "Expired certificates cause TLS handshake failures, breaking HTTPS connectivity for end users. Services behind the certificate become unavailable or fall back to insecure connections.",
+      "cwe": [
+        "CWE-295",
+        "CWE-324"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 7.4,
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:L/A:N",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "A02:2021 Cryptographic Failures",
+      "owasp_api": "",
+      "nist_csf2": [
+        "PR.DS-2"
+      ],
+      "nist_800_53": [
+        "SC-8",
+        "SC-17"
+      ],
+      "nist_800_171": [],
+      "pci_dss_4": [
+        "4.2.1"
+      ],
+      "iso_27001": [],
+      "iso_27002": [],
+      "soc2": [],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [
+        {
+          "technique": "T1557",
+          "tactic": "Credential Access",
+          "name": "Adversary-in-the-Middle"
+        }
+      ],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "Renew or replace the ACM certificate. Verify DNS or email validation is configured for auto-renewal.",
+      "remediation_component": "Configuration",
+      "remediation_category": "Cryptography",
+      "remediation_effort": "Easy",
+      "validation_tools": [
+        "aws",
+        "forge"
+      ]
+    },
+    {
+      "id": "FORGE-AWS-120",
+      "title": "CloudWatch log groups without KMS encryption ({count} group(s))",
+      "aliases": [
+        "CloudWatch Logs no KMS"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "MEDIUM",
+      "description": "CloudWatch log groups are not encrypted with a customer-managed KMS key.",
+      "impact": "Log data (which may contain sensitive application output, error messages with PII, or security events) is not protected by customer-managed encryption. Access control relies solely on IAM policies.",
+      "cwe": [
+        "CWE-311"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 4.3,
+      "cvss_vector": "",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "A02:2021 Cryptographic Failures",
+      "owasp_api": "",
+      "nist_csf2": [
+        "PR.DS-1"
+      ],
+      "nist_800_53": [
+        "SC-28",
+        "AU-9"
+      ],
+      "nist_800_171": [],
+      "pci_dss_4": [
+        "3.5.1"
+      ],
+      "iso_27001": [],
+      "iso_27002": [],
+      "soc2": [],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "aws logs associate-kms-key --log-group-name <name> --kms-key-id <key-arn>",
+      "remediation_component": "Configuration",
+      "remediation_category": "Cryptography",
+      "remediation_effort": "Easy",
+      "validation_tools": [
+        "aws",
+        "forge"
+      ]
+    },
+    {
+      "id": "FORGE-AWS-121",
+      "title": "CloudWatch log groups without retention policy ({count} group(s))",
+      "aliases": [
+        "CloudWatch Logs no retention"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "MEDIUM",
+      "description": "CloudWatch log groups have no retention policy set (logs retained indefinitely).",
+      "impact": "Indefinite retention incurs growing storage costs and increases the blast radius of a log data breach. Conversely, if retention is too short, forensic evidence may be lost before an incident is detected.",
+      "cwe": [
+        "CWE-693"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 3.7,
+      "cvss_vector": "",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "",
+      "owasp_api": "",
+      "nist_csf2": [
+        "PR.DS-3"
+      ],
+      "nist_800_53": [
+        "AU-11",
+        "SI-12"
+      ],
+      "nist_800_171": [],
+      "pci_dss_4": [
+        "10.7"
+      ],
+      "iso_27001": [],
+      "iso_27002": [],
+      "soc2": [],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "aws logs put-retention-policy --log-group-name <name> --retention-in-days <days>",
+      "remediation_component": "Configuration",
+      "remediation_category": "Configuration",
+      "remediation_effort": "Easy",
+      "validation_tools": [
+        "aws",
+        "forge"
+      ]
+    },
+    {
+      "id": "FORGE-AWS-130",
+      "title": "ECS task definition contains secrets in environment: {task_def}/{container}",
+      "aliases": [
+        "ECS plaintext secrets in env"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "CRITICAL",
+      "description": "ECS task definition has environment variables with secret-like names (passwords, API keys, tokens) in plaintext.",
+      "impact": "Plaintext secrets in task definitions are visible via the ECS API to any principal with ecs:DescribeTaskDefinition. Container environment variables are also exposed via the task metadata endpoint inside the container.",
+      "cwe": [
+        "CWE-798",
+        "CWE-200"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 9.0,
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:H/A:N",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "A02:2021 Cryptographic Failures",
+      "owasp_api": "",
+      "nist_csf2": [
+        "PR.DS-1"
+      ],
+      "nist_800_53": [
+        "IA-5(7)",
+        "SC-28"
+      ],
+      "nist_800_171": [],
+      "pci_dss_4": [
+        "2.2.7",
+        "8.3.2"
+      ],
+      "iso_27001": [],
+      "iso_27002": [],
+      "soc2": [],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [
+        {
+          "technique": "T1552.001",
+          "tactic": "Credential Access",
+          "name": "Credentials In Files"
+        },
+        {
+          "technique": "T1078.004",
+          "tactic": "Initial Access",
+          "name": "Cloud Accounts"
+        }
+      ],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "Use ECS secrets (valueFrom) referencing Secrets Manager or SSM Parameter Store instead of plaintext environment variables.",
+      "remediation_component": "Configuration",
+      "remediation_category": "Cryptography",
+      "remediation_effort": "Moderate",
+      "validation_tools": [
+        "aws",
+        "forge"
+      ]
+    },
+    {
+      "id": "FORGE-AWS-140",
+      "title": "OpenSearch domain publicly accessible: {domain_name}",
+      "aliases": [
+        "OpenSearch public endpoint",
+        "Elasticsearch public domain"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "CRITICAL",
+      "description": "OpenSearch domain is not deployed inside a VPC — the endpoint is accessible from the public internet.",
+      "impact": "The OpenSearch endpoint is directly reachable from the internet. If access policies are misconfigured, any attacker can query, modify, or delete indices containing sensitive data.",
+      "cwe": [
+        "CWE-284"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 9.1,
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "A01:2021 Broken Access Control",
+      "owasp_api": "",
+      "nist_csf2": [
+        "PR.AC-5"
+      ],
+      "nist_800_53": [
+        "AC-3",
+        "SC-7"
+      ],
+      "nist_800_171": [],
+      "pci_dss_4": [
+        "1.3.1"
+      ],
+      "iso_27001": [],
+      "iso_27002": [],
+      "soc2": [],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [
+        {
+          "technique": "T1190",
+          "tactic": "Initial Access",
+          "name": "Exploit Public-Facing Application"
+        },
+        {
+          "technique": "T1530",
+          "tactic": "Collection",
+          "name": "Data from Cloud Storage"
+        }
+      ],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "Migrate the OpenSearch domain into a VPC. Note: this requires domain recreation for existing public domains.",
+      "remediation_component": "Network",
+      "remediation_category": "Access Control",
+      "remediation_effort": "Significant",
+      "validation_tools": [
+        "aws",
+        "forge"
+      ]
+    },
+    {
+      "id": "FORGE-AWS-141",
+      "title": "OpenSearch domain encryption at rest disabled: {domain_name}",
+      "aliases": [
+        "OpenSearch no encryption at rest"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "HIGH",
+      "description": "OpenSearch domain does not have encryption at rest enabled.",
+      "impact": "Index data on the underlying storage is unencrypted. If storage is compromised or snapshots are exfiltrated, all indexed data (which may contain PII, logs, or sensitive application data) is readable in plaintext.",
+      "cwe": [
+        "CWE-311"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 6.2,
+      "cvss_vector": "CVSS:3.1/AV:L/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "A02:2021 Cryptographic Failures",
+      "owasp_api": "",
+      "nist_csf2": [
+        "PR.DS-1"
+      ],
+      "nist_800_53": [
+        "SC-28"
+      ],
+      "nist_800_171": [],
+      "pci_dss_4": [
+        "3.5.1"
+      ],
+      "iso_27001": [],
+      "iso_27002": [],
+      "soc2": [],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [
+        {
+          "technique": "T1530",
+          "tactic": "Collection",
+          "name": "Data from Cloud Storage"
+        }
+      ],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "Enable encryption at rest in the OpenSearch domain configuration.",
+      "remediation_component": "Configuration",
+      "remediation_category": "Cryptography",
+      "remediation_effort": "Easy",
+      "validation_tools": [
+        "aws",
+        "forge"
+      ]
+    },
+    {
+      "id": "FORGE-AWS-150",
+      "title": "Secrets Manager secret rotation disabled: {secret_name}",
+      "aliases": [
+        "Secrets Manager no rotation"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "MEDIUM",
+      "description": "Secrets Manager secret does not have automatic rotation enabled.",
+      "impact": "Without automatic rotation, secrets remain static indefinitely. If a secret is compromised, it remains valid until manually rotated, giving attackers a persistent access window.",
+      "cwe": [
+        "CWE-324"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 5.3,
+      "cvss_vector": "",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "A07:2021 Identification and Authentication Failures",
+      "owasp_api": "",
+      "nist_csf2": [
+        "PR.AC-1"
+      ],
+      "nist_800_53": [
+        "IA-5(1)"
+      ],
+      "nist_800_171": [],
+      "pci_dss_4": [
+        "8.3.9"
+      ],
+      "iso_27001": [],
+      "iso_27002": [],
+      "soc2": [],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [
+        {
+          "technique": "T1078",
+          "tactic": "Initial Access",
+          "name": "Valid Accounts"
+        }
+      ],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "Configure automatic rotation with a Lambda rotation function.",
+      "remediation_component": "Configuration",
+      "remediation_category": "Authentication",
+      "remediation_effort": "Moderate",
+      "validation_tools": [
+        "aws",
+        "forge"
+      ]
+    },
+    {
+      "id": "FORGE-AWS-160",
+      "title": "CloudFront distribution access logging disabled: {distribution}",
+      "aliases": [
+        "CloudFront no access logging"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "MEDIUM",
+      "description": "CloudFront distribution does not have access logging enabled.",
+      "impact": "Without access logs, malicious requests, bot traffic, and data exfiltration via the CDN cannot be detected or investigated after the fact.",
+      "cwe": [
+        "CWE-778"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 4.3,
+      "cvss_vector": "",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "A09:2021 Security Logging and Monitoring Failures",
+      "owasp_api": "",
+      "nist_csf2": [
+        "DE.AE-3"
+      ],
+      "nist_800_53": [
+        "AU-2",
+        "AU-12"
+      ],
+      "nist_800_171": [],
+      "pci_dss_4": [
+        "10.2.1"
+      ],
+      "iso_27001": [],
+      "iso_27002": [],
+      "soc2": [],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "Enable standard or real-time access logging to an S3 bucket.",
+      "remediation_component": "Configuration",
+      "remediation_category": "Logging",
+      "remediation_effort": "Easy",
+      "validation_tools": [
+        "aws",
+        "forge"
+      ]
+    },
+    {
+      "id": "FORGE-AWS-161",
+      "title": "CloudFront distribution without WAF: {distribution}",
+      "aliases": [
+        "CloudFront no WAF WebACL"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "MEDIUM",
+      "description": "CloudFront distribution does not have an AWS WAF WebACL attached.",
+      "impact": "Without WAF, the distribution has no application-layer filtering. SQL injection, XSS, bot traffic, and volumetric attacks reach the origin server unfiltered.",
+      "cwe": [
+        "CWE-693"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 5.3,
+      "cvss_vector": "",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "A05:2021 Security Misconfiguration",
+      "owasp_api": "",
+      "nist_csf2": [
+        "PR.AC-5"
+      ],
+      "nist_800_53": [
+        "SC-7",
+        "SI-4"
+      ],
+      "nist_800_171": [],
+      "pci_dss_4": [
+        "6.4.1"
+      ],
+      "iso_27001": [],
+      "iso_27002": [],
+      "soc2": [],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [
+        {
+          "technique": "T1190",
+          "tactic": "Initial Access",
+          "name": "Exploit Public-Facing Application"
+        }
+      ],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "Associate an AWS WAF WebACL with the CloudFront distribution.",
+      "remediation_component": "Network",
+      "remediation_category": "Access Control",
+      "remediation_effort": "Moderate",
+      "validation_tools": [
+        "aws",
+        "forge"
+      ]
+    },
+    {
+      "id": "FORGE-AWS-162",
+      "title": "CloudFront distribution allows HTTP: {distribution}",
+      "aliases": [
+        "CloudFront allows unencrypted viewer connections"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "MEDIUM",
+      "description": "CloudFront distribution default cache behavior allows HTTP (ViewerProtocolPolicy=allow-all).",
+      "impact": "Viewers can connect over plaintext HTTP, exposing request and response data to network eavesdroppers. Session tokens, API keys, and user data transmitted over HTTP can be intercepted.",
+      "cwe": [
+        "CWE-319"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 5.3,
+      "cvss_vector": "",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "A02:2021 Cryptographic Failures",
+      "owasp_api": "",
+      "nist_csf2": [
+        "PR.DS-2"
+      ],
+      "nist_800_53": [
+        "SC-8",
+        "SC-23"
+      ],
+      "nist_800_171": [],
+      "pci_dss_4": [
+        "4.2.1"
+      ],
+      "iso_27001": [],
+      "iso_27002": [],
+      "soc2": [],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [
+        {
+          "technique": "T1040",
+          "tactic": "Credential Access",
+          "name": "Network Sniffing"
+        }
+      ],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "Set ViewerProtocolPolicy to redirect-to-https or https-only in the default cache behavior.",
+      "remediation_component": "Configuration",
+      "remediation_category": "Cryptography",
+      "remediation_effort": "Easy",
+      "validation_tools": [
+        "aws",
+        "forge"
+      ]
+    },
+    {
+      "id": "FORGE-AWS-170",
+      "title": "DynamoDB table not using customer-managed encryption: {table_name}",
+      "aliases": [
+        "DynamoDB default encryption only"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "MEDIUM",
+      "description": "DynamoDB table is using default AWS-owned encryption or has no explicit SSE configuration. Customer-managed KMS keys provide better audit control.",
+      "impact": "With AWS-owned keys, the customer has no visibility into key usage via CloudTrail and cannot enforce key policies or rotation schedules. Regulatory frameworks may require customer-managed key controls.",
+      "cwe": [
+        "CWE-311"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 4.3,
+      "cvss_vector": "",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "A02:2021 Cryptographic Failures",
+      "owasp_api": "",
+      "nist_csf2": [
+        "PR.DS-1"
+      ],
+      "nist_800_53": [
+        "SC-28",
+        "SC-12(1)"
+      ],
+      "nist_800_171": [],
+      "pci_dss_4": [
+        "3.5.1"
+      ],
+      "iso_27001": [],
+      "iso_27002": [],
+      "soc2": [],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "aws dynamodb update-table --table-name <table> --sse-specification Enabled=true,SSEType=KMS,KMSMasterKeyId=<key-arn>",
+      "remediation_component": "Configuration",
+      "remediation_category": "Cryptography",
+      "remediation_effort": "Easy",
+      "validation_tools": [
+        "aws",
+        "forge"
+      ]
     }
   ]
 }
