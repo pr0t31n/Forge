@@ -1002,7 +1002,10 @@ def audit_azure(subscription_id: str, output_dir: Path) -> None:
             else:
                 cp = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
             raw = cp.stdout or ""
-            out_file.write_text(raw, encoding="utf-8")
+            if not raw.strip() and (cp.stderr or "").strip():
+                out_file.write_text(cp.stderr, encoding="utf-8")
+            else:
+                out_file.write_text(raw, encoding="utf-8")
             try:
                 return json.loads(raw) if raw.strip() else None
             except json.JSONDecodeError:
@@ -1127,7 +1130,10 @@ def audit_gcp(project_id: str, output_dir: Path) -> None:
             else:
                 cp = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
             raw = cp.stdout or ""
-            out_file.write_text(raw, encoding="utf-8")
+            if not raw.strip() and (cp.stderr or "").strip():
+                out_file.write_text(cp.stderr, encoding="utf-8")
+            else:
+                out_file.write_text(raw, encoding="utf-8")
             try:
                 return json.loads(raw) if raw.strip() else None
             except json.JSONDecodeError:
@@ -1247,7 +1253,10 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
             else:
                 cp = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
             raw = cp.stdout or ""
-            out_file.write_text(raw, encoding="utf-8")
+            if not raw.strip() and (cp.stderr or "").strip():
+                out_file.write_text(cp.stderr, encoding="utf-8")
+            else:
+                out_file.write_text(raw, encoding="utf-8")
             try:
                 return json.loads(raw) if raw.strip() else None
             except json.JSONDecodeError:
