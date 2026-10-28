@@ -942,6 +942,21 @@ def finding(*, title: str, severity: str, description: str, ip: str = "",
         }
     _findings.append(rec)
     _tok("__CRUCIBLE_FINDING__", json.dumps(rec))
+    _flush_findings()
+
+
+def _flush_findings():
+    if _RUN_DIR is None:
+        return
+    try:
+        if _us is not None:
+            out = [_us.augment_finding(dict(f), tool="forge") for f in _findings]
+            _us.atomic_write_json(_RUN_DIR / "findings.json", out)
+        else:
+            (_RUN_DIR / "findings.json").write_text(
+                json.dumps(_findings, indent=2), encoding="utf-8")
+    except Exception:
+        pass
 
 
 def _save_checkpoint():
