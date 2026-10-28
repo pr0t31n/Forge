@@ -1537,6 +1537,16 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     _denied_services: set = set()
+    _cred_report: dict = {}
+    _iam_users_raw: list = []
+
+    def _refresh_intel():
+        try:
+            _build_aws_intelligence(
+                out_dir, region, _findings, _cred_report,
+                _denied_services, _iam_users_raw)
+        except Exception:
+            pass
 
     def _aws_run(args: list, out_name: str, use_region: bool = True) -> dict | list | None:
         """Run an AWS CLI command.  Returns parsed JSON, or None on failure.
@@ -1683,6 +1693,7 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
         else:
             log(f"[aws] {name} — bucket policy not public")
     log(f"[aws] S3 audit complete — checked {len(buckets)} bucket(s)")
+    _refresh_intel()
 
     # ── EC2 ───────────────────────────────────────────────────────────────────
     _check_pause()
@@ -1811,6 +1822,7 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
                                        "affected": f"{sg_name} ({sg_id})"},
                                  output_file=str(out_dir / "ec2_security_groups.json"))
     log(f"[aws] EC2 audit complete — {total_instances} instance(s), {len(volumes)} volume(s), {len(sgs)} SG(s)")
+    _refresh_intel()
 
     # ── IAM ───────────────────────────────────────────────────────────────────
     _check_pause()
@@ -1819,6 +1831,7 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
     status("aws", "IAM audit", "running")
     users_resp = _aws_run(["iam", "list-users"], "iam_users.json", use_region=False) or {}
     iam_users = users_resp.get("Users") or []
+    _iam_users_raw.extend(iam_users)
     log(f"[aws] Found {len(iam_users)} IAM user(s)")
 
     # Generate + parse credential report FIRST — used by per-user MFA check
@@ -1828,7 +1841,6 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
     time.sleep(3)
     log("[aws] Retrieving credential report...")
     cred_data = _aws_run(["iam", "get-credential-report"], "iam_cred_report.json", use_region=False) or {}
-    _cred_report: dict = {}
     if cred_data.get("Content"):
         log("[aws] Parsing credential report...")
         try:
@@ -1975,6 +1987,7 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
                 except Exception:
                     pass
     log(f"[aws] IAM user audit complete — checked {len(iam_users)} user(s)")
+    _refresh_intel()
 
     # ── RDS ───────────────────────────────────────────────────────────────────
     _check_pause()
@@ -2046,6 +2059,7 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
         else:
             log(f"[aws] {db_id} — Multi-AZ enabled")
     log(f"[aws] RDS audit complete — checked {len(rds_instances)} instance(s)")
+    _refresh_intel()
 
     # ── CloudTrail ────────────────────────────────────────────────────────────
     _check_pause()
@@ -2234,6 +2248,7 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
         elif runtime:
             log(f"[aws] {fn_name} — runtime {runtime} OK")
     log(f"[aws] Lambda audit complete — checked {len(lambda_fns)} function(s)")
+    _refresh_intel()
 
     # ── VPC deep ──────────────────────────────────────────────────────────────
     _check_pause()
@@ -2356,6 +2371,7 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
             except Exception:
                 pass
     log("[aws] IAM deep audit complete")
+    _refresh_intel()
 
     # ── EFS ───────────────────────────────────────────────────────────────────
     _check_pause()
@@ -2543,6 +2559,7 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
     else:
         log(f"[aws] Security Hub enabled — {sh_resp.get('HubArn', '')}")
     log("[aws] Security Hub audit complete")
+    _refresh_intel()
 
     # ── ACM ───────────────────────────────────────────────────────────────────
     _check_pause()
@@ -2783,6 +2800,7 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
         else:
             log(f"[aws] DynamoDB {tbl_name} — customer-managed SSE enabled")
     log(f"[aws] DynamoDB audit complete — checked {len(ddb_tables)} table(s)")
+    _refresh_intel()
 
     # ── ECS ───────────────────────────────────────────────────────────────────
     _check_pause()
@@ -2818,16 +2836,11 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
                          output_file=str(out_dir / f"ecs_{td_name}_detail.json"))
     log(f"[aws] ECS audit complete — checked {len(ecs_arns)} task definition(s)")
 
-    # ── Intelligence data ────────────────────────────────────────────────────
+    # ── Final intelligence refresh ──────────────────────────────────────────
     _check_pause()
-    log("[aws] Building intelligence data for Crucible...")
+    log("[aws] Final intelligence refresh...")
     status("aws", "Intelligence generation", "running")
-    try:
-        _build_aws_intelligence(
-            out_dir, region, _findings, _cred_report,
-            _denied_services, iam_users)
-    except Exception as exc:
-        err(f"[aws] Intelligence generation failed: {exc}")
+    _refresh_intel()
 
     # ── AccessDenied summary ────────────────────────────────────────────────
     if _denied_services:
