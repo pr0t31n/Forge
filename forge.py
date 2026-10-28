@@ -310,7 +310,10 @@ def _aws_console_login_browser(console_url, account, username, password):
                 pass_input.fill(password)
 
             page.locator("#signin_button, button[type='submit']").first.click()
-            page.wait_for_load_state("networkidle", timeout=30000)
+            try:
+                page.wait_for_url("**/console.aws.amazon.com/**", timeout=30000)
+            except PwTimeout:
+                page.wait_for_load_state("networkidle", timeout=10000)
         except PwTimeout:
             pass
         except RuntimeError:
@@ -320,6 +323,7 @@ def _aws_console_login_browser(console_url, account, username, password):
 
         body = page.content().lower()
         current_url = page.url.lower()
+        log(f"[aws-console] Post-login URL: {page.url}")
 
         if "newpasswordrequired" in body or "change_password" in body or "new-password" in body or "/updateaccount" in current_url:
             raise RuntimeError(
@@ -334,28 +338,24 @@ def _aws_console_login_browser(console_url, account, username, password):
         if "authentication_failed" in body or "iam_user_authentication_failure" in body:
             raise RuntimeError("AWS Console login failed — check URL, username and password")
 
-        if "aws.amazon.com" not in page.url:
-            raise RuntimeError(
-                f"Console login did not reach AWS (landed on: {page.url})\n"
-                "  -> Create access keys manually: Console > IAM > Users > Security credentials > Create access key"
-            )
-
-        log("[aws-console] Browser login successful — creating temp access key via IAM API")
+        log("[aws-console] Browser login successful — navigating to IAM console")
         status("aws-console", "AWS Console Login — creating temp key", "running")
 
         try:
             page.goto("https://us-east-1.console.aws.amazon.com/iam/home#/users",
-                       wait_until="networkidle", timeout=30000)
-        except Exception:
+                       wait_until="domcontentloaded", timeout=30000)
+            page.wait_for_load_state("networkidle", timeout=15000)
+        except PwTimeout:
             pass
+        except Exception as exc:
+            log(f"[aws-console] IAM navigation warning: {exc}")
 
+        log(f"[aws-console] IAM page URL: {page.url}")
         create_payload = json.dumps({"UserName": username})
 
-        iam_api = page.url.split("/iam/")[0] + "/iam/api" if "/iam/" in page.url else "https://us-east-1.console.aws.amazon.com/iam/api"
-
         try:
-            resp = page.evaluate("""async ([endpoint, payload]) => {
-                const r = await fetch(endpoint, {
+            resp = page.evaluate("""async ([payload]) => {
+                const r = await fetch(window.location.origin + '/iam/api', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/x-amz-json-1.1',
@@ -365,12 +365,13 @@ def _aws_console_login_browser(console_url, account, username, password):
                     credentials: 'include'
                 });
                 return {status: r.status, body: await r.text()};
-            }""", [iam_api, create_payload])
+            }""", [create_payload])
 
             key_data = json.loads(resp["body"])
         except Exception as exc:
             raise RuntimeError(
                 f"Failed to create access key via Console browser session: {exc}\n"
+                f"  Page was on: {page.url}\n"
                 "  -> Create access keys manually: Console > IAM > Users > Security credentials > Create access key"
             )
 
