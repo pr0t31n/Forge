@@ -1,0 +1,5 @@
+Requirement already satisfied: playwright-stealth in /usr/local/lib/python3.14/site-packages (2.0.3)
+Requirement already satisfied: playwright>=1.40.0 in /usr/local/lib/python3.14/site-packages (from playwright-stealth) (1.64.1)
+Requirement already satisfied: pyee<15,>=13 in /usr/local/lib/python3.14/site-packages (from playwright>=1.40.0->playwright-stealth) (13.0.1)
+Requirement already satisfied: greenlet<4.0.0,>=3.1.1 in /usr/local/lib/python3.14/site-packages (from playwright>=1.40.0->playwright-stealth) (3.3.2)
+Requirement already satisfied: typing-extensions in /usr/local/lib/python3.14/site-packages (from pyee<15,>=13->playwright>=1.40.0->playwright-stealth) (4.15.0)

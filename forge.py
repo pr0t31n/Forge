@@ -362,7 +362,18 @@ def _aws_console_login_browser(console_url, account, username, password):
             + _MANUAL_KEY_STEPS
         )
 
+    _has_stealth = False
+    try:
+        from playwright_stealth import stealth_sync
+        _has_stealth = True
+    except ImportError:
+        pass
+
     log("[aws-console] Lightweight login blocked (HTTP 403) — retrying with headless browser")
+    if _has_stealth:
+        log("[aws-console] playwright-stealth available — applying anti-detection")
+    else:
+        log("[aws-console] playwright-stealth not installed — using basic stealth only")
     status("aws-console", "AWS Console Login — launching browser", "running")
 
     browser = None
@@ -380,7 +391,12 @@ def _aws_console_login_browser(console_url, account, username, password):
     try:
         browser = pw.chromium.launch(
             headless=True,
-            args=["--disable-blink-features=AutomationControlled"],
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--disable-dev-shm-usage",
+                "--no-first-run",
+                "--no-default-browser-check",
+            ],
         )
         ctx = browser.new_context(
             user_agent=(
@@ -390,12 +406,16 @@ def _aws_console_login_browser(console_url, account, username, password):
             viewport={"width": 1280, "height": 720},
             locale="en-US",
         )
-        ctx.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-            Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
-            window.chrome = {runtime: {}, loadTimes: function(){}, csi: function(){}};
-        """)
         page = ctx.new_page()
+
+        if _has_stealth:
+            stealth_sync(page)
+        else:
+            ctx.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
+                window.chrome = {runtime: {}, loadTimes: function(){}, csi: function(){}};
+            """)
 
         status("aws-console", "AWS Console Login — navigating to sign-in", "running")
         try:
@@ -571,11 +591,110 @@ def _aws_console_login_browser(console_url, account, username, password):
         if key_data is None:
             raise RuntimeError(
                 "AWS OAuth redirect did not complete — the headless browser was likely detected.\n"
-                "  Page was on: " + page.url[:200] + "\n\n"
+                "  Page was on: " + _sanitize_url(page.url)[:200] + "\n\n"
                 + _MANUAL_KEY_STEPS
             )
 
         return key_data
+    finally:
+        if browser:
+            try:
+                browser.close()
+            except Exception:
+                pass
+        try:
+            pw.stop()
+        except Exception:
+            pass
+
+
+def _aws_console_login_visible(console_url, account, username, password):
+    """Visible-browser fallback: launch a real browser, let the user log in
+    manually past any CAPTCHA/anti-bot challenges, then capture the session
+    to create temporary access keys."""
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        return None
+
+    log("[aws-console] Headless browser detected — falling back to visible browser")
+    log("[aws-console] A browser window will open. Log in manually, then confirm in Crucible.")
+    status("aws-console", "AWS Console Login — visible browser", "running",
+           step="Waiting for manual login")
+
+    browser = None
+    try:
+        pw_ctx = sync_playwright()
+        pw = pw_ctx.start()
+    except Exception as exc:
+        log(f"[aws-console] Playwright failed to start for visible mode: {exc}")
+        return None
+
+    try:
+        browser = pw.chromium.launch(
+            headless=False,
+            args=["--disable-blink-features=AutomationControlled",
+                  "--start-maximized"],
+        )
+        ctx = browser.new_context(
+            viewport={"width": 1280, "height": 900},
+            locale="en-US",
+            no_viewport=True,
+        )
+        page = ctx.new_page()
+
+        try:
+            page.goto(console_url, wait_until="networkidle", timeout=30000)
+        except Exception:
+            page.goto(console_url, timeout=60000)
+
+        prompt(
+            "A browser window has opened with the AWS sign-in page. "
+            "Complete the login (including any CAPTCHA or MFA challenges), "
+            "then click OK here to continue.",
+            skippable=True,
+        )
+
+        status("aws-console", "AWS Console Login — visible browser", "running",
+               step="Capturing session")
+        on_console = _url_on_console(page.url)
+        if not on_console:
+            log(f"[aws-console] Visible browser URL after login: {_sanitize_url(page.url)[:120]}")
+            on_console = _poll_for_console(page, timeout_s=15)
+
+        if not on_console:
+            log("[aws-console] Not on console domain after manual login — cannot extract session")
+            return None
+
+        log("[aws-console] Manual login successful — attempting to create temp access key")
+        create_payload = json.dumps({"UserName": username})
+
+        try:
+            page.goto("https://us-east-1.console.aws.amazon.com/iam/home#/users",
+                       wait_until="networkidle", timeout=15000)
+        except Exception:
+            pass
+
+        try:
+            resp = page.evaluate("""async ([payload]) => {
+                const r = await fetch(window.location.origin + '/iam/api', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-amz-json-1.1',
+                        'X-Amz-Target': 'AWSIdentityManagementService.CreateAccessKey',
+                    },
+                    body: payload,
+                    credentials: 'include',
+                });
+                return await r.json();
+            }""", [create_payload])
+            _check_iam_error(resp)
+            return resp
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            log(f"[aws-console] Visible browser CreateAccessKey failed: {exc}")
+            return None
     finally:
         if browser:
             try:
@@ -593,8 +712,10 @@ def _aws_console_login(console_url: str, username: str, password: str,
     """Log into the AWS Console, create a temp access key, configure a CLI
     profile and return the profile name.
 
-    Tries lightweight requests POST first; if AWS blocks with 403, falls back
-    to Playwright headless Chromium which passes anti-bot checks.
+    Three-tier fallback:
+      1. Lightweight requests POST (fastest, no browser)
+      2. Playwright headless + stealth (anti-detection patches)
+      3. Visible browser window (user logs in manually)
 
     On failure raises RuntimeError with a user-friendly message.
     """
@@ -620,7 +741,25 @@ def _aws_console_login(console_url: str, username: str, password: str,
             raise
 
     if not ok:
-        key_data = _aws_console_login_browser(console_url, account, username, password)
+        try:
+            key_data = _aws_console_login_browser(console_url, account, username, password)
+        except RuntimeError as exc:
+            headless_err = str(exc)
+            if "headless browser was likely detected" in headless_err or \
+               "OAuth redirect did not complete" in headless_err:
+                log("[aws-console] Headless browser blocked — trying visible browser fallback")
+                key_data = _aws_console_login_visible(
+                    console_url, account, username, password)
+                if key_data is None:
+                    raise RuntimeError(
+                        "All browser login methods failed.\n"
+                        "  1. Lightweight requests: HTTP 403\n"
+                        "  2. Headless browser: AWS anti-bot detection\n"
+                        "  3. Visible browser: manual login did not succeed\n\n"
+                        + _MANUAL_KEY_STEPS
+                    )
+            else:
+                raise
         used_browser = True
     else:
         log("[aws-console] Console login successful — creating temp access key")
@@ -739,6 +878,23 @@ def err(msg: str) -> None:
 def status(phase: str, label: str, state: str, step: str = "") -> None:
     rec = {"phase": phase, "label": label, "status": state, "step": step}
     _tok("__CRUCIBLE_STATUS__", json.dumps(rec))
+
+
+def prompt(question: str, skippable: bool = False) -> str:
+    import uuid as _uid
+    if _MANAGED:
+        payload = {"id": str(_uid.uuid4()), "question": question,
+                   "type": "text", "options": [], "skippable": skippable}
+        print(f"__CRUCIBLE_PROMPT__:{json.dumps(payload)}", flush=True)
+        try:
+            return sys.stdin.readline().rstrip("\n")
+        except Exception:
+            return ""
+    else:
+        try:
+            return input(f"\n  [?] {question}\n  > ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return ""
 
 
 def finding(*, title: str, severity: str, description: str, ip: str = "",
