@@ -3,6 +3,7 @@
 import subprocess
 import sys
 import shutil
+from pathlib import Path
 
 TOOL_NAME = "Forge"
 MIN_PYTHON = (3, 10)
@@ -35,9 +36,44 @@ def _brew_cask_installed(cask):
         return False
 
 
+def _install_aws_cli_linux():
+    """Install AWS CLI v2 on Linux via the official bundled installer."""
+    import tempfile
+    tmp = Path(tempfile.mkdtemp(prefix="forge_aws_"))
+    try:
+        print("  [install] Downloading AWS CLI v2 …")
+        _run(f"curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o {tmp}/awscliv2.zip",
+             check=False)
+        if not (tmp / "awscliv2.zip").exists():
+            print("  [WARN] AWS CLI download failed — install manually")
+            return
+        _run(f"unzip -qo {tmp}/awscliv2.zip -d {tmp}", check=False)
+        installer = tmp / "aws" / "install"
+        if installer.exists():
+            if _has("aws"):
+                _run(f"{installer} --update", check=False)
+            else:
+                _run(str(installer), check=False)
+        else:
+            print("  [WARN] AWS CLI installer not found after unzip")
+    finally:
+        _run(f"rm -rf {tmp}", check=False)
+
+
 def install_system_deps():
-    """Install az + gcloud CLIs via the platform package manager when available."""
+    """Install aws + az + gcloud CLIs via the platform package manager when available."""
     if sys.platform.startswith("linux"):
+        if not _has("aws"):
+            print("[install] Installing AWS CLI v2 (bundled installer) …")
+            for dep in ("curl", "unzip"):
+                if not _has(dep):
+                    if shutil.which("apt-get"):
+                        _run(["apt-get", "install", "-y", dep], check=False)
+                    elif shutil.which("dnf"):
+                        _run(["dnf", "install", "-y", dep], check=False)
+            _install_aws_cli_linux()
+        else:
+            print("  [ok] aws already installed")
         if shutil.which("apt-get"):
             print("[install] Installing system packages via apt …")
             if not _has("az"):
@@ -62,6 +98,13 @@ def install_system_deps():
     elif sys.platform == "darwin":
         if shutil.which("brew"):
             print("[install] Installing system packages via brew …")
+            if not _has("aws"):
+                if _brew_installed("awscli"):
+                    print("  [ok] awscli already installed")
+                else:
+                    _run(["brew", "install", "awscli"], check=False)
+            else:
+                print("  [ok] aws already installed")
             if not _has("az"):
                 if _brew_installed("azure-cli"):
                     print("  [ok] azure-cli already installed")
@@ -78,6 +121,10 @@ def install_system_deps():
                 print("  [ok] gcloud already installed")
     elif sys.platform == "win32":
         if shutil.which("choco"):
+            if not _has("aws"):
+                _run(["choco", "install", "-y", "awscli"], check=False)
+            else:
+                print("  [ok] aws already installed")
             if not _has("az"):
                 _run(["choco", "install", "-y", "azure-cli"], check=False)
             else:
