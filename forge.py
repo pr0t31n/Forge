@@ -1588,11 +1588,50 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
             err(f"aws {' '.join(args[:2])} failed: {exc}")
             return None
 
+    # ── Resolve account ID (needed for s3control, etc.) ─────────────────────
+    _aws_account_id = ""
+    _sts_resp = _aws_run(["sts", "get-caller-identity"], "sts_identity.json", use_region=False)
+    if _sts_resp:
+        _aws_account_id = _sts_resp.get("Account", "")
+        log(f"[aws] Account ID: {_aws_account_id}")
+
     # ── S3 ────────────────────────────────────────────────────────────────────
     _check_pause()
     _save_checkpoint()
     log("[aws] Starting S3 bucket audit...")
     status("aws", "S3 bucket audit", "running")
+    # --- FORGE-AWS-300 — S3 account-level public access blocks ---
+    log("[aws] Checking S3 account-level public access block...")
+    acct_pab = None
+    if _aws_account_id:
+        acct_pab = _aws_run(["s3control", "get-public-access-block",
+                              "--account-id", _aws_account_id],
+                             "s3_account_public_access.json", use_region=False)
+    if acct_pab:
+        acct_pab_cfg = acct_pab.get("PublicAccessBlockConfiguration") or {}
+        if not all(acct_pab_cfg.get(k) for k in ("BlockPublicAcls", "IgnorePublicAcls",
+                                                    "BlockPublicPolicy", "RestrictPublicBuckets")):
+            log("[aws] Account-level S3 public access block incomplete (HIGH)")
+            finding(title="S3 account-level Block Public Access not fully enabled",
+                     severity="HIGH",
+                     description="The AWS account does not have all four S3 Block Public Access settings enabled at the account level. "
+                                 "This allows individual buckets to be made public.",
+                     data={"catalogue_id": "FORGE-AWS-300", "affected": "AWS Account",
+                           "remediation": "aws s3control put-public-access-block --account-id <ACCT> "
+                                          "--public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,"
+                                          "BlockPublicPolicy=true,RestrictPublicBuckets=true"},
+                     output_file=str(out_dir / "s3_account_public_access.json"))
+        else:
+            log("[aws] Account-level S3 public access block OK")
+    else:
+        log("[aws] Account-level S3 public access block not configured (HIGH)")
+        finding(title="S3 account-level Block Public Access not configured",
+                 severity="HIGH",
+                 description="No account-level S3 Block Public Access configuration found — individual buckets may be publicly accessible.",
+                 data={"catalogue_id": "FORGE-AWS-300", "affected": "AWS Account",
+                       "remediation": "Enable account-level S3 Block Public Access via the S3 console or CLI."},
+                 output_file=str(out_dir / "s3_account_public_access.json"))
+
     buckets_resp = _aws_run(["s3api", "list-buckets"], "s3_buckets.json", use_region=False) or {}
     buckets = buckets_resp.get("Buckets") or []
     log(f"[aws] Found {len(buckets)} S3 bucket(s)")
@@ -1692,6 +1731,159 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
                      output_file=str(out_dir / f"s3_{name}_policy_status.json"))
         else:
             log(f"[aws] {name} — bucket policy not public")
+
+        # --- FORGE-AWS-200 — S3 bucket ACL prohibited ---
+        log(f"[aws] {name} — checking ownership controls...")
+        own_resp = _aws_run(["s3api", "get-bucket-ownership-controls", "--bucket", name],
+                             f"s3_{name}_ownership.json", use_region=False)
+        if own_resp:
+            rules = (own_resp.get("OwnershipControls") or {}).get("Rules") or []
+            if not any(r.get("ObjectOwnership") == "BucketOwnerEnforced" for r in rules):
+                log(f"[aws] {name} — bucket ACLs not disabled (MEDIUM)")
+                finding(title=f"S3 bucket ACLs not disabled: {name}",
+                         severity="MEDIUM",
+                         description=f"S3 bucket {name} does not have ObjectOwnership=BucketOwnerEnforced. "
+                                     "ACLs can grant access independently of bucket policies.",
+                         data={"catalogue_id": "FORGE-AWS-200", "affected": name,
+                               "remediation": "Set bucket ownership to BucketOwnerEnforced to disable ACLs."},
+                         output_file=str(out_dir / f"s3_{name}_ownership.json"))
+            else:
+                log(f"[aws] {name} — ACLs disabled (BucketOwnerEnforced)")
+        else:
+            log(f"[aws] {name} — no ownership controls (ACLs may be active)")
+            finding(title=f"S3 bucket ACLs not disabled: {name}",
+                     severity="MEDIUM",
+                     description=f"S3 bucket {name} has no ownership controls configured — ACLs are active by default.",
+                     data={"catalogue_id": "FORGE-AWS-200", "affected": name,
+                           "remediation": "Set bucket ownership to BucketOwnerEnforced to disable ACLs."},
+                     output_file=str(out_dir / f"s3_{name}_ownership.json"))
+
+        # --- FORGE-AWS-201 + FORGE-AWS-207 — S3 bucket cross-account access + secure transport ---
+        log(f"[aws] {name} — checking bucket policy for cross-account access and transport security...")
+        bp_resp = _aws_run(["s3api", "get-bucket-policy", "--bucket", name],
+                            f"s3_{name}_policy.json", use_region=False)
+        _s3_has_ssl_deny = False
+        if bp_resp and bp_resp.get("Policy"):
+            try:
+                pol_doc = json.loads(bp_resp["Policy"])
+                for stmt in pol_doc.get("Statement") or []:
+                    # Cross-account check
+                    principal = stmt.get("Principal", "")
+                    p_aws = principal.get("AWS", []) if isinstance(principal, dict) else []
+                    if isinstance(p_aws, str):
+                        p_aws = [p_aws]
+                    for p in p_aws:
+                        if "::" in p and "root" not in p.lower():
+                            cond = stmt.get("Condition") or {}
+                            if not cond and stmt.get("Effect") == "Allow":
+                                log(f"[aws] {name} — cross-account access in policy (HIGH)")
+                                finding(title=f"S3 bucket cross-account access: {name}",
+                                         severity="HIGH",
+                                         description=f"S3 bucket {name} policy grants access to external account principal {p} "
+                                                     "without restrictive conditions.",
+                                         data={"catalogue_id": "FORGE-AWS-201", "affected": name,
+                                               "remediation": "Add Condition restrictions or remove cross-account grants."},
+                                         output_file=str(out_dir / f"s3_{name}_policy.json"))
+                                break
+                    # Secure transport check
+                    cond = stmt.get("Condition") or {}
+                    bool_cond = cond.get("Bool") or {}
+                    if (bool_cond.get("aws:SecureTransport") == "false" and
+                            stmt.get("Effect") == "Deny"):
+                        _s3_has_ssl_deny = True
+            except (json.JSONDecodeError, TypeError):
+                pass
+        if not _s3_has_ssl_deny:
+            log(f"[aws] {name} — no SSL-only transport policy (MEDIUM)")
+            finding(title=f"S3 bucket missing secure transport policy: {name}",
+                     severity="MEDIUM",
+                     description=f"S3 bucket {name} does not have a bucket policy denying non-HTTPS requests (aws:SecureTransport=false).",
+                     data={"catalogue_id": "FORGE-AWS-207", "affected": name,
+                           "remediation": "Add a bucket policy statement: Effect=Deny, Condition: aws:SecureTransport=false, Action: s3:*, Resource: bucket ARN."},
+                     output_file=str(out_dir / f"s3_{name}_policy.json"))
+        else:
+            log(f"[aws] {name} — secure transport policy OK")
+
+        # --- FORGE-AWS-202 — S3 cross-region replication ---
+        log(f"[aws] {name} — checking cross-region replication...")
+        rep_resp = _aws_run(["s3api", "get-bucket-replication", "--bucket", name],
+                             f"s3_{name}_replication.json", use_region=False)
+        if not rep_resp or not (rep_resp.get("ReplicationConfiguration") or {}).get("Rules"):
+            log(f"[aws] {name} — no cross-region replication (LOW)")
+            finding(title=f"S3 bucket cross-region replication not configured: {name}",
+                     severity="LOW",
+                     description=f"S3 bucket {name} does not have cross-region replication configured for disaster recovery.",
+                     data={"catalogue_id": "FORGE-AWS-202", "affected": name,
+                           "remediation": "Configure cross-region replication to a bucket in a different region."},
+                     output_file=str(out_dir / f"s3_{name}_replication.json"))
+        else:
+            log(f"[aws] {name} — cross-region replication configured")
+
+        # --- FORGE-AWS-203 — S3 event notifications ---
+        log(f"[aws] {name} — checking event notifications...")
+        notif_resp = _aws_run(["s3api", "get-bucket-notification-configuration", "--bucket", name],
+                               f"s3_{name}_notifications.json", use_region=False) or {}
+        has_notif = any(notif_resp.get(k) for k in ("TopicConfigurations", "QueueConfigurations",
+                                                      "LambdaFunctionConfigurations", "EventBridgeConfiguration"))
+        if not has_notif:
+            log(f"[aws] {name} — no event notifications (LOW)")
+            finding(title=f"S3 bucket event notifications not configured: {name}",
+                     severity="LOW",
+                     description=f"S3 bucket {name} has no event notification configuration — changes to objects are not monitored.",
+                     data={"catalogue_id": "FORGE-AWS-203", "affected": name,
+                           "remediation": "Configure S3 event notifications to SNS, SQS, Lambda, or EventBridge."},
+                     output_file=str(out_dir / f"s3_{name}_notifications.json"))
+        else:
+            log(f"[aws] {name} — event notifications configured")
+
+        # --- FORGE-AWS-204 — S3 KMS encryption (uses existing `enc` variable) ---
+        if enc is not None:
+            _enc_rules = (enc.get("ServerSideEncryptionConfiguration") or {}).get("Rules") or []
+            _uses_kms = any(
+                (r.get("ApplyServerSideEncryptionByDefault") or {}).get("SSEAlgorithm") == "aws:kms"
+                for r in _enc_rules)
+            if not _uses_kms:
+                log(f"[aws] {name} — encrypted but not with KMS (MEDIUM)")
+                finding(title=f"S3 bucket not using KMS encryption: {name}",
+                         severity="MEDIUM",
+                         description=f"S3 bucket {name} uses SSE-S3 (AES-256) instead of SSE-KMS. "
+                                     "KMS provides better key management, auditing, and access control.",
+                         data={"catalogue_id": "FORGE-AWS-204", "affected": name,
+                               "remediation": "Configure default encryption with SSE-KMS using a customer-managed or AWS-managed KMS key."},
+                         output_file=str(out_dir / f"s3_{name}_encryption.json"))
+            else:
+                log(f"[aws] {name} — KMS encryption OK")
+
+        # --- FORGE-AWS-205 — S3 lifecycle ---
+        log(f"[aws] {name} — checking lifecycle configuration...")
+        lc_resp = _aws_run(["s3api", "get-bucket-lifecycle-configuration", "--bucket", name],
+                            f"s3_{name}_lifecycle.json", use_region=False)
+        if not lc_resp or not (lc_resp.get("Rules") or []):
+            log(f"[aws] {name} — no lifecycle rules (LOW)")
+            finding(title=f"S3 bucket lifecycle not configured: {name}",
+                     severity="LOW",
+                     description=f"S3 bucket {name} has no lifecycle rules — data is retained indefinitely with no automated transitions or expiration.",
+                     data={"catalogue_id": "FORGE-AWS-205", "affected": name,
+                           "remediation": "Configure lifecycle rules for data retention, transition to cheaper storage classes, or expiration."},
+                     output_file=str(out_dir / f"s3_{name}_lifecycle.json"))
+        else:
+            log(f"[aws] {name} — lifecycle rules configured")
+
+        # --- FORGE-AWS-206 — S3 Object Lock ---
+        log(f"[aws] {name} — checking object lock configuration...")
+        ol_resp = _aws_run(["s3api", "get-object-lock-configuration", "--bucket", name],
+                            f"s3_{name}_object_lock.json", use_region=False)
+        if not ol_resp or (ol_resp.get("ObjectLockConfiguration") or {}).get("ObjectLockEnabled") != "Enabled":
+            log(f"[aws] {name} — object lock not enabled (MEDIUM)")
+            finding(title=f"S3 bucket object lock not enabled: {name}",
+                     severity="MEDIUM",
+                     description=f"S3 bucket {name} does not have Object Lock enabled — objects can be deleted or overwritten.",
+                     data={"catalogue_id": "FORGE-AWS-206", "affected": name,
+                           "remediation": "Enable Object Lock (requires creating a new bucket with lock enabled, then migrating data)."},
+                     output_file=str(out_dir / f"s3_{name}_object_lock.json"))
+        else:
+            log(f"[aws] {name} — object lock enabled")
+
     log(f"[aws] S3 audit complete — checked {len(buckets)} bucket(s)")
     _refresh_intel()
 
@@ -1767,6 +1959,61 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
             else:
                 log(f"[aws] {label} — no user data configured")
 
+            # --- FORGE-AWS-208 — Detailed monitoring ---
+            _mon_state = (inst.get("Monitoring") or {}).get("State", "")
+            if _mon_state != "enabled":
+                log(f"[aws] {label} — detailed monitoring not enabled (LOW)")
+                finding(title=f"EC2 instance detailed monitoring disabled: {label}",
+                         severity="LOW",
+                         description=f"Instance {iid} does not have detailed monitoring enabled (1-minute CloudWatch metrics).",
+                         data={"catalogue_id": "FORGE-AWS-208", "affected": label,
+                               "remediation": "aws ec2 monitor-instances --instance-ids <id>"},
+                         output_file=str(out_dir / "ec2_instances.json"))
+            else:
+                log(f"[aws] {label} — detailed monitoring enabled")
+
+            # --- FORGE-AWS-209 — Internet-facing with instance profile ---
+            if inst.get("PublicIpAddress") and inst.get("IamInstanceProfile"):
+                log(f"[aws] {label} — internet-facing with instance profile (HIGH)")
+                finding(title=f"EC2 instance internet-facing with IAM role: {label}",
+                         severity="HIGH",
+                         description=f"Instance {iid} has a public IP address and an IAM instance profile attached. "
+                                     "SSRF vulnerabilities could allow credential theft from the instance metadata service.",
+                         data={"catalogue_id": "FORGE-AWS-209", "affected": label,
+                               "remediation": "Remove public IP or move behind a load balancer. Enforce IMDSv2."},
+                         output_file=str(out_dir / "ec2_instances.json"))
+
+            # --- FORGE-AWS-210 — Instance age ---
+            _launch = inst.get("LaunchTime", "")
+            if _launch:
+                try:
+                    _launch_dt = datetime.fromisoformat(_launch.replace("Z", "+00:00"))
+                    _inst_age = (datetime.now(timezone.utc) - _launch_dt).days
+                    if _inst_age > 365:
+                        log(f"[aws] {label} — running for {_inst_age} days (MEDIUM)")
+                        finding(title=f"EC2 instance older than 365 days: {label}",
+                                 severity="MEDIUM",
+                                 description=f"Instance {iid} has been running for {_inst_age} days. "
+                                             "Long-running instances may have outdated AMIs and unpatched software.",
+                                 data={"catalogue_id": "FORGE-AWS-210", "affected": label,
+                                       "remediation": "Review the instance — consider replacing with a fresh AMI or rebuilding from infrastructure-as-code."},
+                                 output_file=str(out_dir / "ec2_instances.json"))
+                except Exception:
+                    pass
+
+            # --- FORGE-AWS-211 — Multiple ENIs ---
+            _enis = inst.get("NetworkInterfaces") or []
+            if len(_enis) > 1:
+                log(f"[aws] {label} — has {len(_enis)} ENIs attached (LOW)")
+                finding(title=f"EC2 instance has multiple ENIs: {label}",
+                         severity="LOW",
+                         description=f"Instance {iid} has {len(_enis)} network interfaces. Multiple ENIs can complicate "
+                                     "security group management and network routing.",
+                         data={"catalogue_id": "FORGE-AWS-211", "affected": label,
+                               "remediation": "Review whether multiple ENIs are required."},
+                         output_file=str(out_dir / "ec2_instances.json"))
+
+
     _check_pause()
     log("[aws] Checking EBS volumes...")
     ebs_resp = _aws_run(["ec2", "describe-volumes"], "ec2_volumes.json") or {}
@@ -1800,27 +2047,297 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
         for perm in sg.get("IpPermissions") or []:
             from_port = perm.get("FromPort", 0)
             to_port = perm.get("ToPort", 0)
-            for ip_range in perm.get("IpRanges") or []:
-                cidr = ip_range.get("CidrIp", "")
-                if cidr == "0.0.0.0/0":
+            _all_cidrs = [(r.get("CidrIp", ""), "IPv4") for r in perm.get("IpRanges") or []]
+            _all_cidrs += [(r.get("CidrIpv6", ""), "IPv6") for r in perm.get("Ipv6Ranges") or []]
+            for cidr, _af in _all_cidrs:
+                if cidr in ("0.0.0.0/0", "::/0"):
                     exposed = {p for p in sensitive_ports if from_port <= p <= to_port}
                     if exposed:
-                        log(f"[aws] {sg_name} ({sg_id}) — exposes ports {sorted(exposed)} to 0.0.0.0/0 (HIGH)")
-                        finding(title=f"Security group {sg_name} ({sg_id}) exposes sensitive ports to 0.0.0.0/0",
+                        log(f"[aws] {sg_name} ({sg_id}) — exposes ports {sorted(exposed)} to {cidr} (HIGH)")
+                        finding(title=f"Security group {sg_name} ({sg_id}) exposes sensitive ports to {cidr}",
                                  severity="HIGH",
-                                 description=f"Inbound rule allows 0.0.0.0/0 access to port(s) {', '.join(str(p) for p in sorted(exposed))}.",
+                                 description=f"Inbound rule allows {cidr} access to port(s) {', '.join(str(p) for p in sorted(exposed))}.",
                                  data={"catalogue_id": "FORGE-AWS-012",
                                        "affected": f"{sg_name} ({sg_id})",
                                        "remediation": "Restrict source CIDR to known IP ranges."},
                                  output_file=str(out_dir / "ec2_security_groups.json"))
                     elif from_port == 0 and to_port == 65535:
-                        log(f"[aws] {sg_name} ({sg_id}) — allows ALL ports from 0.0.0.0/0 (CRITICAL)")
-                        finding(title=f"Security group {sg_name} ({sg_id}) allows all ports from 0.0.0.0/0",
+                        log(f"[aws] {sg_name} ({sg_id}) — allows ALL ports from {cidr} (CRITICAL)")
+                        finding(title=f"Security group {sg_name} ({sg_id}) allows all ports from {cidr}",
                                  severity="CRITICAL",
-                                 description="Inbound rule allows unrestricted access (all ports) from any IP.",
+                                 description=f"Inbound rule allows unrestricted access (all ports) from {cidr}.",
                                  data={"catalogue_id": "FORGE-AWS-013",
                                        "affected": f"{sg_name} ({sg_id})"},
                                  output_file=str(out_dir / "ec2_security_groups.json"))
+                elif _af == "IPv4" and cidr != "0.0.0.0/0" and not cidr.startswith("10.") \
+                     and not cidr.startswith("172.16.") and not cidr.startswith("192.168.") \
+                     and not cidr.startswith("127."):
+                    import ipaddress as _ipa
+                    try:
+                        _net = _ipa.ip_network(cidr, strict=False)
+                        if _net.is_global:
+                            log(f"[aws] {sg_name} ({sg_id}) — open to specific public IP {cidr} (MEDIUM)")
+                            finding(title=f"Security group open to specific public IP: {sg_name} ({sg_id})",
+                                     severity="MEDIUM",
+                                     description=f"Security group {sg_name} ({sg_id}) allows ingress from specific public IP {cidr} "
+                                                 f"on port(s) {from_port}-{to_port}.",
+                                     data={"catalogue_id": "FORGE-AWS-504", "affected": f"{sg_name} ({sg_id})",
+                                           "remediation": "Verify this public IP is expected; prefer VPN or private connectivity."},
+                                     output_file=str(out_dir / "ec2_security_groups.json"))
+                    except (ValueError, TypeError):
+                        pass
+
+    # --- FORGE-AWS-212 — Unused security groups ---
+    _check_pause()
+    log("[aws] Checking for unused security groups...")
+    _used_sgs = set()
+    eni_resp = _aws_run(["ec2", "describe-network-interfaces"], "ec2_network_interfaces.json") or {}
+    for eni in eni_resp.get("NetworkInterfaces") or []:
+        for g in eni.get("Groups") or []:
+            _used_sgs.add(g.get("GroupId", ""))
+    _unused_count = 0
+    for sg in sgs:
+        sg_id = sg.get("GroupId", "")
+        sg_name = sg.get("GroupName", "")
+        if sg_name == "default":
+            continue
+        if sg_id not in _used_sgs:
+            _unused_count += 1
+    if _unused_count > 0:
+        log(f"[aws] {_unused_count} unused non-default security group(s) found (LOW)")
+        finding(title=f"Unused security groups detected ({_unused_count} group(s))",
+                 severity="LOW",
+                 description=f"{_unused_count} non-default security groups are not attached to any network interface. "
+                             "Unused security groups increase management overhead.",
+                 data={"catalogue_id": "FORGE-AWS-212",
+                       "affected": f"{_unused_count} security group(s)",
+                       "remediation": "Review and delete unused security groups."},
+                 output_file=str(out_dir / "ec2_network_interfaces.json"))
+    else:
+        log("[aws] All non-default security groups are in use")
+
+    # --- FORGE-AWS-213 — EBS snapshot public access block ---
+    _check_pause()
+    log("[aws] Checking EBS snapshot public access block...")
+    snap_block = _aws_run(["ec2", "get-snapshot-block-public-access-state"],
+                           "ec2_snapshot_block_public_access.json") or {}
+    if snap_block.get("State") != "block-all-sharing":
+        log(f"[aws] EBS snapshot public access not fully blocked (HIGH)")
+        finding(title="EBS snapshot public access not blocked",
+                 severity="HIGH",
+                 description=f"EBS snapshot sharing is not fully blocked (state: {snap_block.get('State', 'unknown')}). "
+                             "Snapshots may be shared publicly, exposing volume data.",
+                 data={"catalogue_id": "FORGE-AWS-213",
+                       "remediation": "aws ec2 enable-snapshot-block-public-access --state block-all-sharing"},
+                 output_file=str(out_dir / "ec2_snapshot_block_public_access.json"))
+    else:
+        log("[aws] EBS snapshot public access blocked")
+
+    # --- FORGE-AWS-214 — EBS volume snapshots exist ---
+    _check_pause()
+    log("[aws] Checking EBS volume snapshot coverage...")
+    all_snaps = _aws_run(["ec2", "describe-snapshots", "--owner-ids", "self", "--max-results", "1000"],
+                          "ec2_snapshots.json") or {}
+    _snapped_vols = {s.get("VolumeId") for s in all_snaps.get("Snapshots") or [] if s.get("VolumeId")}
+    _no_snap_count = 0
+    for vol in volumes:
+        vid = vol.get("VolumeId", "")
+        if vid and vid not in _snapped_vols:
+            _no_snap_count += 1
+    if _no_snap_count > 0:
+        log(f"[aws] {_no_snap_count} EBS volume(s) have no snapshots (HIGH)")
+        finding(title=f"EBS volumes without snapshots ({_no_snap_count} volume(s))",
+                 severity="HIGH",
+                 description=f"{_no_snap_count} of {len(volumes)} EBS volumes have no snapshots. "
+                             "Data on these volumes is not backed up.",
+                 data={"catalogue_id": "FORGE-AWS-214",
+                       "affected": f"{_no_snap_count} volume(s)",
+                       "remediation": "Create snapshots or configure AWS Backup plans for these volumes."},
+                 output_file=str(out_dir / "ec2_snapshots.json"))
+    else:
+        log("[aws] All EBS volumes have snapshots")
+
+    # --- FORGE-AWS-400 — EBS volumes protected by backup plan ---
+    _check_pause()
+    log("[aws] Checking EBS volumes in AWS Backup plans...")
+    _backup_plans = _aws_run(["backup", "list-backup-plans"], "backup_plans.json") or {}
+    _backup_protected_arns = set()
+    for plan in (_backup_plans.get("BackupPlansList") or []):
+        plan_id = plan.get("BackupPlanId", "")
+        sel_resp = _aws_run(["backup", "list-backup-selections", "--backup-plan-id", plan_id],
+                             f"backup_selections_{plan_id}.json") or {}
+        for sel in (sel_resp.get("BackupSelectionsList") or []):
+            sel_id = sel.get("SelectionId", "")
+            sel_detail = _aws_run(["backup", "get-backup-selection",
+                                    "--backup-plan-id", plan_id, "--selection-id", sel_id],
+                                   f"backup_selection_{plan_id}_{sel_id}.json") or {}
+            bs = sel_detail.get("BackupSelection") or {}
+            for res in bs.get("Resources") or []:
+                _backup_protected_arns.add(res)
+    _unprotected_vols = 0
+    for vol in volumes:
+        vid = vol.get("VolumeId", "")
+        vol_arn = f"arn:aws:ec2:{region}:{_aws_account_id}:volume/{vid}"
+        if vol_arn not in _backup_protected_arns and "*" not in _backup_protected_arns:
+            _unprotected_vols += 1
+    if _unprotected_vols > 0:
+        log(f"[aws] {_unprotected_vols} EBS volume(s) not in any backup plan (MEDIUM)")
+        finding(title=f"EBS volumes not protected by backup plan ({_unprotected_vols} volume(s))",
+                 severity="MEDIUM",
+                 description=f"{_unprotected_vols} of {len(volumes)} EBS volumes are not explicitly included in any AWS Backup plan.",
+                 data={"catalogue_id": "FORGE-AWS-400",
+                       "affected": f"{_unprotected_vols} volume(s)",
+                       "remediation": "Add EBS volumes to an AWS Backup plan for automated backup protection."},
+                 output_file=str(out_dir / "backup_plans.json"))
+    else:
+        log("[aws] All EBS volumes are in backup plans (or wildcard-protected)")
+
+    # --- FORGE-AWS-215 — Account-level IMDSv2 default ---
+    _check_pause()
+    log("[aws] Checking account-level IMDSv2 default...")
+    imds_defaults = _aws_run(["ec2", "get-instance-metadata-defaults"],
+                              "ec2_imds_defaults.json") or {}
+    _acct_defaults = imds_defaults.get("AccountLevel") or {}
+    if _acct_defaults.get("HttpTokens") != "required":
+        log("[aws] Account-level IMDSv2 not enforced as default (HIGH)")
+        finding(title="EC2 account-level IMDSv2 not enforced by default",
+                 severity="HIGH",
+                 description="The account does not require IMDSv2 by default for new EC2 instances. "
+                             "New instances will default to IMDSv1 which is vulnerable to SSRF attacks.",
+                 data={"catalogue_id": "FORGE-AWS-215",
+                       "remediation": "aws ec2 modify-instance-metadata-defaults --http-tokens required"},
+                 output_file=str(out_dir / "ec2_imds_defaults.json"))
+    else:
+        log("[aws] Account-level IMDSv2 default enforced")
+
+    # --- FORGE-AWS-216/217/218 — NACL checks ---
+    _check_pause()
+    log("[aws] Checking network ACLs...")
+    nacl_resp = _aws_run(["ec2", "describe-network-acls"], "ec2_network_acls.json") or {}
+    nacls = nacl_resp.get("NetworkAcls") or []
+    log(f"[aws] Found {len(nacls)} network ACL(s)")
+    for nacl in nacls:
+        nacl_id = nacl.get("NetworkAclId", "")
+        for entry in nacl.get("Entries") or []:
+            if entry.get("Egress"):
+                continue
+            if entry.get("RuleAction") != "allow":
+                continue
+            cidr = entry.get("CidrBlock", "")
+            cidr6 = entry.get("Ipv6CidrBlock", "")
+            if cidr != "0.0.0.0/0" and cidr6 != "::/0":
+                continue
+            pr = entry.get("PortRange") or {}
+            from_p = pr.get("From", 0)
+            to_p = pr.get("To", 65535)
+            if from_p == 0 and to_p == 65535:
+                log(f"[aws] NACL {nacl_id} — allows all ports from 0.0.0.0/0 (HIGH)")
+                finding(title=f"Network ACL allows all inbound from internet: {nacl_id}",
+                         severity="HIGH",
+                         description=f"NACL {nacl_id} has an allow rule for all ports from {cidr or cidr6}.",
+                         data={"catalogue_id": "FORGE-AWS-216", "affected": nacl_id,
+                               "remediation": "Restrict NACL rules to specific ports and source CIDRs."},
+                         output_file=str(out_dir / "ec2_network_acls.json"))
+            else:
+                if from_p <= 22 <= to_p:
+                    log(f"[aws] NACL {nacl_id} — allows SSH (port 22) from internet (MEDIUM)")
+                    finding(title=f"Network ACL allows SSH from internet: {nacl_id}",
+                             severity="MEDIUM",
+                             description=f"NACL {nacl_id} allows inbound SSH (port 22) from {cidr or cidr6}.",
+                             data={"catalogue_id": "FORGE-AWS-217", "affected": nacl_id,
+                                   "remediation": "Restrict SSH access to specific source CIDRs."},
+                             output_file=str(out_dir / "ec2_network_acls.json"))
+                if from_p <= 3389 <= to_p:
+                    log(f"[aws] NACL {nacl_id} — allows RDP (port 3389) from internet (MEDIUM)")
+                    finding(title=f"Network ACL allows RDP from internet: {nacl_id}",
+                             severity="MEDIUM",
+                             description=f"NACL {nacl_id} allows inbound RDP (port 3389) from {cidr or cidr6}.",
+                             data={"catalogue_id": "FORGE-AWS-218", "affected": nacl_id,
+                                   "remediation": "Restrict RDP access to specific source CIDRs."},
+                             output_file=str(out_dir / "ec2_network_acls.json"))
+    log("[aws] NACL audit complete")
+
+    # --- FORGE-AWS-219 — Subnets auto-assign public IP ---
+    _check_pause()
+    log("[aws] Checking subnet public IP auto-assignment...")
+    subnets_resp = _aws_run(["ec2", "describe-subnets"], "ec2_subnets.json") or {}
+    subnets = subnets_resp.get("Subnets") or []
+    for subnet in subnets:
+        subnet_id = subnet.get("SubnetId", "")
+        if subnet.get("MapPublicIpOnLaunch"):
+            log(f"[aws] Subnet {subnet_id} — auto-assigns public IP (HIGH)")
+            finding(title=f"VPC subnet auto-assigns public IP: {subnet_id}",
+                     severity="HIGH",
+                     description=f"Subnet {subnet_id} automatically assigns public IP addresses to launched instances. "
+                                 "Instances may unintentionally be exposed to the internet.",
+                     data={"catalogue_id": "FORGE-AWS-219", "affected": subnet_id,
+                           "remediation": "aws ec2 modify-subnet-attribute --subnet-id <id> --no-map-public-ip-on-launch"},
+                     output_file=str(out_dir / "ec2_subnets.json"))
+
+    # --- FORGE-AWS-220 — VPC EC2 endpoint ---
+    _check_pause()
+    log("[aws] Checking VPC endpoints...")
+    endpoints_resp = _aws_run(["ec2", "describe-vpc-endpoints"], "ec2_vpc_endpoints.json") or {}
+    _endpoints = endpoints_resp.get("VpcEndpoints") or []
+    _vpc_ep_map = {}
+    for ep in _endpoints:
+        _vpc_ep_map.setdefault(ep.get("VpcId", ""), []).append(ep.get("ServiceName", ""))
+    for vpc in vpcs:
+        vpc_id = vpc.get("VpcId", "")
+        ep_services = _vpc_ep_map.get(vpc_id, [])
+        if not any("ec2" in svc for svc in ep_services):
+            log(f"[aws] VPC {vpc_id} — no EC2 VPC endpoint (MEDIUM)")
+            finding(title=f"VPC missing EC2 endpoint: {vpc_id}",
+                     severity="MEDIUM",
+                     description=f"VPC {vpc_id} does not have a VPC endpoint for EC2. "
+                                 "EC2 API calls traverse the public internet instead of staying within the AWS network.",
+                     data={"catalogue_id": "FORGE-AWS-220", "affected": vpc_id,
+                           "remediation": "Create a VPC endpoint for com.amazonaws.<region>.ec2"},
+                     output_file=str(out_dir / "ec2_vpc_endpoints.json"))
+
+    # --- FORGE-AWS-221 — VPC peering route tables ---
+    _check_pause()
+    log("[aws] Checking VPC peering route tables...")
+    rt_resp = _aws_run(["ec2", "describe-route-tables"], "ec2_route_tables.json") or {}
+    rts = rt_resp.get("RouteTables") or []
+    for rt in rts:
+        rt_id = rt.get("RouteTableId", "")
+        for route in rt.get("Routes") or []:
+            if route.get("VpcPeeringConnectionId"):
+                dest = route.get("DestinationCidrBlock", "")
+                if dest == "0.0.0.0/0":
+                    log(f"[aws] Route table {rt_id} — peering route with 0.0.0.0/0 (MEDIUM)")
+                    finding(title=f"VPC peering route with unrestricted CIDR: {rt_id}",
+                             severity="MEDIUM",
+                             description=f"Route table {rt_id} has a route to peering connection "
+                                         f"{route['VpcPeeringConnectionId']} with destination 0.0.0.0/0. "
+                                         "This routes all traffic through the peering connection.",
+                             data={"catalogue_id": "FORGE-AWS-221", "affected": rt_id,
+                                   "remediation": "Replace the 0.0.0.0/0 route with specific CIDR ranges for the peer VPC."},
+                             output_file=str(out_dir / "ec2_route_tables.json"))
+
+    # --- FORGE-AWS-222 — VPC endpoint trust boundaries ---
+    for ep in _endpoints:
+        ep_id = ep.get("VpcEndpointId", "")
+        ep_policy = ep.get("PolicyDocument", "")
+        if ep_policy:
+            try:
+                pol_doc = json.loads(ep_policy) if isinstance(ep_policy, str) else ep_policy
+                for stmt in pol_doc.get("Statement") or []:
+                    principal = stmt.get("Principal", "")
+                    if principal == "*" and not (stmt.get("Condition") or {}):
+                        log(f"[aws] VPC endpoint {ep_id} — allows Principal=* without condition (HIGH)")
+                        finding(title=f"VPC endpoint allows unrestricted access: {ep_id}",
+                                 severity="HIGH",
+                                 description=f"VPC endpoint {ep_id} has a policy granting Principal=* without conditions. "
+                                             "Any AWS account could use this endpoint.",
+                                 data={"catalogue_id": "FORGE-AWS-222", "affected": ep_id,
+                                       "remediation": "Restrict the VPC endpoint policy to specific accounts, users, or roles."},
+                                 output_file=str(out_dir / "ec2_vpc_endpoints.json"))
+                        break
+            except (json.JSONDecodeError, TypeError):
+                pass
+
     log(f"[aws] EC2 audit complete — {total_instances} instance(s), {len(volumes)} volume(s), {len(sgs)} SG(s)")
     _refresh_intel()
 
@@ -1986,8 +2503,421 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
                         log(f"[aws] {uname} — access key {key.get('AccessKeyId', '')} age OK ({age} days)")
                 except Exception:
                     pass
+
+            # Check key last-used (still inside the key loop where `key` is the key dict)
+            _key_id = key.get("AccessKeyId", "")
+            if _key_id and key.get("Status") == "Active":
+                _klu_resp = _aws_run(["iam", "get-access-key-last-used", "--access-key-id", _key_id],
+                                      f"iam_{uname}_{_key_id}_last_used.json", use_region=False) or {}
+                _klu = _klu_resp.get("AccessKeyLastUsed") or {}
+                _last_used = _klu.get("LastUsedDate", "")
+                if _last_used:
+                    try:
+                        _lu_dt = datetime.fromisoformat(_last_used.replace("Z", "+00:00"))
+                        _unused_days = (datetime.now(timezone.utc) - _lu_dt).days
+                        if _unused_days > 45:
+                            log(f"[aws] {uname} — access key {_key_id} unused for {_unused_days} days (MEDIUM)")
+                            finding(title=f"IAM access key unused for {_unused_days} days: {uname}/{_key_id}",
+                                     severity="MEDIUM",
+                                     description=f"Access key {_key_id} for user {uname} has not been used for {_unused_days} days.",
+                                     data={"catalogue_id": "FORGE-AWS-231", "affected": uname,
+                                           "remediation": "Deactivate or delete unused access keys."},
+                                     output_file=str(out_dir / f"iam_{uname}_{_key_id}_last_used.json"))
+                    except Exception:
+                        pass
+                elif not _klu.get("ServiceName"):
+                    log(f"[aws] {uname} — access key {_key_id} has never been used (MEDIUM)")
+                    finding(title=f"IAM access key never used: {uname}/{_key_id}",
+                             severity="MEDIUM",
+                             description=f"Access key {_key_id} for user {uname} has never been used since creation.",
+                             data={"catalogue_id": "FORGE-AWS-231", "affected": uname,
+                                   "remediation": "Delete access keys that have never been used."},
+                             output_file=str(out_dir / f"iam_{uname}_{_key_id}_last_used.json"))
+
+
+        # FORGE-AWS-230: Inline policies on user
+        log(f"[aws] {uname} — checking inline policies...")
+        inline_resp = _aws_run(["iam", "list-user-policies", "--user-name", uname],
+                                 f"iam_{uname}_inline_policies.json", use_region=False) or {}
+        inline_policies = inline_resp.get("PolicyNames") or []
+        if inline_policies or attached:
+            _direct_count = len(inline_policies) + len(attached)
+            log(f"[aws] {uname} — has {_direct_count} direct policy attachment(s) (MEDIUM)")
+            finding(title=f"IAM user has direct policy attachments: {uname}",
+                     severity="MEDIUM",
+                     description=f"IAM user {uname} has {len(attached)} attached and {len(inline_policies)} inline "
+                                 "policies directly assigned. Best practice is to assign policies through groups or roles.",
+                     data={"catalogue_id": "FORGE-AWS-230", "affected": uname,
+                           "remediation": "Move user policies to IAM groups and add the user to the group instead."},
+                     output_file=str(out_dir / f"iam_{uname}_inline_policies.json"))
+
+        # FORGE-AWS-233: User with long-lived credentials accessing non-IAM/STS services
+        cr_row = _cred_report.get(uname, {})
+        _svc1 = cr_row.get("access_key_1_last_used_service", "")
+        _svc2 = cr_row.get("access_key_2_last_used_service", "")
+        _non_iam_sts = {s for s in (_svc1, _svc2) if s and s.lower() not in ("iam", "sts", "n/a", "")}
+        if _non_iam_sts and cr_row.get("access_key_1_active", "").lower() == "true":
+            log(f"[aws] {uname} — uses long-lived credentials for {_non_iam_sts} (HIGH)")
+            finding(title=f"IAM user uses long-lived credentials for non-IAM services: {uname}",
+                     severity="HIGH",
+                     description=f"IAM user {uname} uses long-lived access keys to access services: "
+                                 f"{', '.join(sorted(_non_iam_sts))}. Use temporary credentials via IAM roles instead.",
+                     data={"catalogue_id": "FORGE-AWS-233", "affected": uname,
+                           "remediation": "Replace long-lived access keys with IAM role assumption (STS temporary credentials)."},
+                     output_file=str(out_dir / f"iam_{uname}_keys.json"))
+
     log(f"[aws] IAM user audit complete — checked {len(iam_users)} user(s)")
     _refresh_intel()
+
+
+    # -- IAM Roles Audit --
+    _check_pause()
+    log("[aws] Starting IAM roles audit...")
+    roles_resp = _aws_run(["iam", "list-roles", "--max-items", "200"], "iam_roles.json", use_region=False) or {}
+    iam_roles = roles_resp.get("Roles") or []
+    log(f"[aws] Found {len(iam_roles)} IAM role(s) (max 200)")
+    _has_security_audit = False
+    _has_support_access = False
+    _check_pause()
+    for role in iam_roles:
+        _check_pause()
+        rname = role.get("RoleName", "")
+        rpath = role.get("Path", "")
+        if rpath.startswith("/aws-service-role/") or rpath.startswith("/aws-reserved/"):
+            continue
+        trust_doc = role.get("AssumeRolePolicyDocument") or {}
+        if isinstance(trust_doc, str):
+            try:
+                trust_doc = json.loads(trust_doc)
+            except (json.JSONDecodeError, TypeError):
+                trust_doc = {}
+
+        # Check attached policies
+        rpol_resp = _aws_run(["iam", "list-attached-role-policies", "--role-name", rname],
+                              f"iam_role_{rname}_policies.json", use_region=False) or {}
+        rattached = rpol_resp.get("AttachedPolicies") or []
+        for rpol in rattached:
+            rpol_name = rpol.get("PolicyArn", "").rsplit("/", 1)[-1]
+            if rpol_name == "SecurityAudit":
+                _has_security_audit = True
+            if rpol_name == "AWSSupportAccess":
+                _has_support_access = True
+
+            # FORGE-AWS-234: AdministratorAccess on role
+            if rpol_name == "AdministratorAccess":
+                log(f"[aws] Role {rname} — has AdministratorAccess (HIGH)")
+                finding(title=f"IAM role has AdministratorAccess: {rname}",
+                         severity="HIGH",
+                         description=f"IAM role {rname} has the AdministratorAccess managed policy attached.",
+                         data={"catalogue_id": "FORGE-AWS-234", "affected": rname,
+                               "remediation": "Replace AdministratorAccess with least-privilege policies."},
+                         output_file=str(out_dir / f"iam_role_{rname}_policies.json"))
+
+            # FORGE-AWS-235: Cross-account ReadOnlyAccess
+            if rpol_name == "ReadOnlyAccess":
+                for stmt in (trust_doc.get("Statement") or []):
+                    principal = stmt.get("Principal", {})
+                    p_aws = principal.get("AWS", []) if isinstance(principal, dict) else []
+                    if isinstance(p_aws, str):
+                        p_aws = [p_aws]
+                    for p in p_aws:
+                        if ":" in p and ":root" in p:
+                            log(f"[aws] Role {rname} — cross-account ReadOnlyAccess to {p} (HIGH)")
+                            finding(title=f"IAM role grants cross-account ReadOnlyAccess: {rname}",
+                                     severity="HIGH",
+                                     description=f"Role {rname} has ReadOnlyAccess and trusts external account {p}.",
+                                     data={"catalogue_id": "FORGE-AWS-235", "affected": rname,
+                                           "remediation": "Remove ReadOnlyAccess or restrict the trust policy to internal accounts."},
+                                     output_file=str(out_dir / f"iam_role_{rname}_policies.json"))
+                            break
+
+        # FORGE-AWS-236: Confused deputy prevention for service roles
+        for stmt in (trust_doc.get("Statement") or []):
+            principal = stmt.get("Principal", {})
+            p_svc = principal.get("Service", []) if isinstance(principal, dict) else []
+            if isinstance(p_svc, str):
+                p_svc = [p_svc]
+            if p_svc:
+                cond = stmt.get("Condition") or {}
+                has_source = any(
+                    cond.get(op, {}).get(k) for op in ("StringEquals", "StringLike", "ArnLike", "ArnEquals")
+                    for k in ("aws:SourceArn", "aws:SourceAccount"))
+                if not has_source:
+                    log(f"[aws] Role {rname} — service trust without confused deputy prevention (HIGH)")
+                    finding(title=f"IAM role missing confused deputy prevention: {rname}",
+                             severity="HIGH",
+                             description=f"Role {rname} trusts AWS service(s) {', '.join(p_svc)} but has no "
+                                         "aws:SourceArn or aws:SourceAccount condition to prevent confused deputy attacks.",
+                             data={"catalogue_id": "FORGE-AWS-236", "affected": rname,
+                                   "remediation": "Add Condition with aws:SourceArn or aws:SourceAccount to the trust policy."},
+                             output_file=str(out_dir / f"iam_role_{rname}_policies.json"))
+                    break
+
+                # FORGE-AWS-506: Service trust restricts source to THIS account
+                if p_svc:
+                    cond_src = stmt.get("Condition") or {}
+                    _has_acct = any(
+                        _aws_account_id and _aws_account_id in str(cond_src.get(op, {}).get("aws:SourceAccount", ""))
+                        for op in ("StringEquals", "StringLike")) if _aws_account_id else False
+                    if not _has_acct:
+                        _has_arn_acct = any(
+                            _aws_account_id and _aws_account_id in str(cond_src.get(op, {}).get("aws:SourceArn", ""))
+                            for op in ("StringEquals", "StringLike", "ArnLike", "ArnEquals")) if _aws_account_id else False
+                        if not _has_arn_acct:
+                            log(f"[aws] Role {rname} — service trust does not restrict source to account (MEDIUM)")
+                            finding(title=f"IAM role service trust not restricted to account: {rname}",
+                                     severity="MEDIUM",
+                                     description=f"Role {rname} trusts AWS service(s) {', '.join(p_svc)} but does not "
+                                                 f"restrict aws:SourceAccount to {_aws_account_id or 'this account'}.",
+                                     data={"catalogue_id": "FORGE-AWS-506", "affected": rname,
+                                           "remediation": "Add aws:SourceAccount condition matching the account ID to the trust policy."},
+                                     output_file=str(out_dir / f"iam_role_{rname}_policies.json"))
+                            break
+
+    # FORGE-AWS-238: SecurityAudit role
+    if not _has_security_audit:
+        log("[aws] No role with SecurityAudit policy found (LOW)")
+        finding(title="IAM: No SecurityAudit role configured",
+                 severity="LOW",
+                 description="No IAM role has the SecurityAudit AWS managed policy attached. "
+                             "A dedicated audit role is recommended for security assessments.",
+                 data={"catalogue_id": "FORGE-AWS-238",
+                       "remediation": "Create an IAM role with the SecurityAudit managed policy."},
+                 output_file=str(out_dir / "iam_roles.json"))
+    else:
+        log("[aws] SecurityAudit role found")
+
+    # FORGE-AWS-239: AWSSupportAccess role
+    if not _has_support_access:
+        log("[aws] No role with AWSSupportAccess policy found (LOW)")
+        finding(title="IAM: No support access role configured",
+                 severity="LOW",
+                 description="No IAM role has the AWSSupportAccess managed policy. "
+                             "A support role is needed to open AWS support cases.",
+                 data={"catalogue_id": "FORGE-AWS-239",
+                       "remediation": "Create an IAM role with the AWSSupportAccess managed policy."},
+                 output_file=str(out_dir / "iam_roles.json"))
+    else:
+        log("[aws] AWSSupportAccess role found")
+
+    # FORGE-AWS-237: Custom policies with permissive sts:AssumeRole
+    _check_pause()
+    log("[aws] Checking custom policies for permissive role assumption...")
+    custom_pols = _aws_run(["iam", "list-policies", "--scope", "Local", "--max-items", "100"],
+                            "iam_custom_policies.json", use_region=False) or {}
+    for cpol in (custom_pols.get("Policies") or []):
+        cpol_arn = cpol.get("Arn", "")
+        cpol_name = cpol_arn.rsplit("/", 1)[-1]
+        cpol_ver = cpol.get("DefaultVersionId", "v1")
+        ver_resp = _aws_run(["iam", "get-policy-version", "--policy-arn", cpol_arn,
+                              "--version-id", cpol_ver],
+                             f"iam_policy_{cpol_name}_{cpol_ver}.json", use_region=False) or {}
+        pol_doc = (ver_resp.get("PolicyVersion") or {}).get("Document") or {}
+        if isinstance(pol_doc, str):
+            try:
+                pol_doc = json.loads(pol_doc)
+            except (json.JSONDecodeError, TypeError):
+                pol_doc = {}
+        for stmt in (pol_doc.get("Statement") or []):
+            if stmt.get("Effect") != "Allow":
+                continue
+            actions = stmt.get("Action", [])
+            if isinstance(actions, str):
+                actions = [actions]
+            resources = stmt.get("Resource", [])
+            if isinstance(resources, str):
+                resources = [resources]
+            has_assume = any(a.lower() in ("sts:assumerole", "sts:*", "*") for a in actions)
+            has_wildcard_resource = "*" in resources
+            if has_assume and has_wildcard_resource:
+                log(f"[aws] Custom policy {cpol_name} — allows sts:AssumeRole on * (HIGH)")
+                finding(title=f"Custom IAM policy allows permissive role assumption: {cpol_name}",
+                         severity="HIGH",
+                         description=f"Custom policy {cpol_name} allows sts:AssumeRole (or sts:*) on Resource=*. "
+                                     "This enables assumption of any role in the account.",
+                         data={"catalogue_id": "FORGE-AWS-237", "affected": cpol_name,
+                               "remediation": "Restrict the Resource to specific role ARNs."},
+                         output_file=str(out_dir / f"iam_policy_{cpol_name}_{cpol_ver}.json"))
+                break
+
+    # FORGE-AWS-500: Hardware MFA for users with console access
+    _check_pause()
+    log("[aws] Checking for hardware MFA on console users...")
+    for user in iam_users:
+        uname = user.get("UserName", "")
+        cr_row = _cred_report.get(uname, {})
+        if cr_row.get("password_enabled", "").lower() != "true":
+            continue
+        mfa_resp = _aws_run(["iam", "list-mfa-devices", "--user-name", uname],
+                              f"iam_{uname}_mfa.json", use_region=False) or {}
+        mfa_devices = mfa_resp.get("MFADevices") or []
+        has_hw = any("sms-mfa" not in (d.get("SerialNumber", "").lower())
+                      and "arn:aws:iam::mfa/totp" not in (d.get("SerialNumber", "").lower())
+                      and ":mfa/" in d.get("SerialNumber", "")
+                      and "arn:aws:iam::mfa/" not in d.get("SerialNumber", "")
+                      for d in mfa_devices)
+        has_virtual = any("arn:aws:iam::" in d.get("SerialNumber", "")
+                          and ":mfa/" in d.get("SerialNumber", "")
+                          for d in mfa_devices)
+        if mfa_devices and not has_hw and has_virtual:
+            log(f"[aws] {uname} — MFA enabled but no hardware MFA device (HIGH)")
+            finding(title=f"IAM user lacks hardware MFA: {uname}",
+                     severity="HIGH",
+                     description=f"IAM user {uname} has virtual MFA but no hardware MFA device. "
+                                 "Hardware MFA provides stronger protection against phishing and SIM-swap attacks.",
+                     data={"catalogue_id": "FORGE-AWS-500", "affected": uname,
+                           "remediation": "Assign a hardware MFA device (YubiKey, Gemalto) to this user."},
+                     output_file=str(out_dir / f"iam_{uname}_mfa.json"))
+
+    # FORGE-AWS-501: Root account hardware MFA
+    if root_row:
+        if root_row.get("mfa_active", "").lower() == "true":
+            root_mfa_resp = _aws_run(["iam", "list-mfa-devices"], "iam_root_mfa.json", use_region=False) or {}
+            root_mfa_devices = root_mfa_resp.get("MFADevices") or []
+            _root_has_hw = any("arn:aws:iam" in d.get("SerialNumber", "")
+                                and ":mfa/" in d.get("SerialNumber", "")
+                                and d.get("SerialNumber", "").startswith("arn:aws:iam::") is False
+                                for d in root_mfa_devices)
+            if not _root_has_hw and root_mfa_devices:
+                log("[aws] Root account — virtual MFA only, no hardware MFA (CRITICAL)")
+                finding(title="IAM: Root account lacks hardware MFA",
+                         severity="CRITICAL",
+                         description="Root account has virtual MFA but not hardware MFA. "
+                                     "Hardware MFA is strongly recommended for the root account.",
+                         data={"catalogue_id": "FORGE-AWS-501", "affected": "root",
+                               "remediation": "Replace virtual MFA with a hardware MFA device on the root account."},
+                         output_file=str(out_dir / "iam_root_mfa.json"))
+            else:
+                log("[aws] Root account — hardware MFA status checked")
+
+    # FORGE-AWS-502: AWS-managed policy with *:* administrative privileges
+    _check_pause()
+    log("[aws] Checking AWS-managed policies for *:* privileges on entities...")
+    _aws_managed_resp = _aws_run(["iam", "list-policies", "--scope", "AWS",
+                                    "--only-attached", "--max-items", "200"],
+                                  "iam_aws_managed_attached.json", use_region=False) or {}
+    for mp in (_aws_managed_resp.get("Policies") or []):
+        mp_name = mp.get("PolicyName", "")
+        if mp_name in ("AdministratorAccess",):
+            continue
+        mp_arn = mp.get("Arn", "")
+        mp_ver = mp.get("DefaultVersionId", "v1")
+        ver_r = _aws_run(["iam", "get-policy-version", "--policy-arn", mp_arn,
+                            "--version-id", mp_ver],
+                           f"iam_awspol_{mp_name}_{mp_ver}.json", use_region=False) or {}
+        pd = (ver_r.get("PolicyVersion") or {}).get("Document") or {}
+        if isinstance(pd, str):
+            try:
+                pd = json.loads(pd)
+            except (json.JSONDecodeError, TypeError):
+                pd = {}
+        for stmt in (pd.get("Statement") or []):
+            if stmt.get("Effect") != "Allow":
+                continue
+            actions = stmt.get("Action", [])
+            if isinstance(actions, str):
+                actions = [actions]
+            resources = stmt.get("Resource", [])
+            if isinstance(resources, str):
+                resources = [resources]
+            if "*" in actions and "*" in resources:
+                log(f"[aws] AWS-managed policy {mp_name} — grants *:* (CRITICAL)")
+                finding(title=f"AWS-managed policy with administrative privileges attached: {mp_name}",
+                         severity="CRITICAL",
+                         description=f"AWS-managed policy {mp_name} allows Action=* on Resource=* and is attached to entities. "
+                                     "This grants full administrative access.",
+                         data={"catalogue_id": "FORGE-AWS-502", "affected": mp_name,
+                               "remediation": f"Detach {mp_name} and replace with least-privilege policies."},
+                         output_file=str(out_dir / f"iam_awspol_{mp_name}_{mp_ver}.json"))
+                break
+
+    # FORGE-AWS-503: Root credentials management (Org feature)
+    _check_pause()
+    log("[aws] Checking centralized root credentials management...")
+    org_resp = _aws_run(["organizations", "describe-organization"],
+                         "organizations_describe.json", use_region=False)
+    if org_resp:
+        org = org_resp.get("Organization") or {}
+        features = org.get("AvailablePolicyTypes") or []
+        root_mgmt_resp = _aws_run(["iam", "list-account-aliases"], "iam_account_aliases.json", use_region=False) or {}
+        org_features = _aws_run(["organizations", "list-roots"], "org_roots.json", use_region=False) or {}
+        org_roots = org_features.get("Roots") or []
+        has_root_mgmt = False
+        for r in org_roots:
+            for pt in r.get("PolicyTypes") or []:
+                if "ROOT_CREDENTIALS" in pt.get("Type", ""):
+                    has_root_mgmt = True
+        if not has_root_mgmt:
+            log("[aws] Centralized root credentials management not enabled (HIGH)")
+            finding(title="AWS Organization lacks centralized root credentials management",
+                     severity="HIGH",
+                     description="The AWS Organization does not have centralized root credentials management enabled. "
+                                 "This feature allows managing root user credentials from the management account.",
+                     data={"catalogue_id": "FORGE-AWS-503",
+                           "remediation": "Enable centralized root credentials management in AWS Organizations."},
+                     output_file=str(out_dir / "org_roots.json"))
+
+    # FORGE-AWS-507/508/509/510: Stale Bedrock and SageMaker access on users and roles
+    _check_pause()
+    log("[aws] Checking for stale Bedrock/SageMaker access...")
+    _bedrock_actions = {"bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream",
+                        "bedrock:CreateModelCustomizationJob", "bedrock:*"}
+    _sm_actions = {"sagemaker:CreateTrainingJob", "sagemaker:CreateEndpoint",
+                   "sagemaker:InvokeEndpoint", "sagemaker:*"}
+    _service_stale_checks = [
+        ("Bedrock", _bedrock_actions, "FORGE-AWS-507", "FORGE-AWS-509"),
+        ("SageMaker", _sm_actions, "FORGE-AWS-508", "FORGE-AWS-510"),
+    ]
+    for _svc_label, _svc_acts, _user_cat, _role_cat in _service_stale_checks:
+        for user in iam_users:
+            uname = user.get("UserName", "")
+            cr_row = _cred_report.get(uname, {})
+            _last_used = cr_row.get("access_key_1_last_used_date", "N/A")
+            _ak1_active = cr_row.get("access_key_1_active", "").lower() == "true"
+            if not _ak1_active:
+                continue
+            upol_resp = _aws_run(["iam", "list-attached-user-policies", "--user-name", uname],
+                                  f"iam_user_{uname}_policies.json", use_region=False) or {}
+            _has_svc = False
+            for up in (upol_resp.get("AttachedPolicies") or []):
+                _parn = up.get("PolicyArn", "")
+                if _svc_label.lower() in _parn.lower() or "AdministratorAccess" in _parn:
+                    _has_svc = True
+                    break
+            if _has_svc and _last_used == "N/A":
+                log(f"[aws] User {uname} — has {_svc_label} access but key never used (MEDIUM)")
+                finding(title=f"IAM user has stale {_svc_label} access: {uname}",
+                         severity="MEDIUM",
+                         description=f"User {uname} has {_svc_label} permissions but access key has never been used. "
+                                     "Unused service access should be revoked.",
+                         data={"catalogue_id": _user_cat, "affected": uname,
+                               "remediation": f"Remove {_svc_label} permissions from user {uname} or verify active use."},
+                         output_file=str(out_dir / f"iam_user_{uname}_policies.json"))
+        for role in iam_roles:
+            rname = role.get("RoleName", "")
+            rpath = role.get("Path", "")
+            if rpath.startswith("/aws-service-role/") or rpath.startswith("/aws-reserved/"):
+                continue
+            _last_used_r = (role.get("RoleLastUsed") or {}).get("LastUsedDate", "")
+            rpol_resp2 = _aws_run(["iam", "list-attached-role-policies", "--role-name", rname],
+                                    f"iam_role_{rname}_policies.json", use_region=False) or {}
+            _has_svc_r = False
+            for rp in (rpol_resp2.get("AttachedPolicies") or []):
+                _rparn = rp.get("PolicyArn", "")
+                if _svc_label.lower() in _rparn.lower() or "AdministratorAccess" in _rparn:
+                    _has_svc_r = True
+                    break
+            if _has_svc_r and not _last_used_r:
+                log(f"[aws] Role {rname} — has {_svc_label} access but never used (MEDIUM)")
+                finding(title=f"IAM role has stale {_svc_label} access: {rname}",
+                         severity="MEDIUM",
+                         description=f"Role {rname} has {_svc_label} permissions but has never been used. "
+                                     "Unused service access should be revoked.",
+                         data={"catalogue_id": _role_cat, "affected": rname,
+                               "remediation": f"Remove {_svc_label} permissions from role {rname} or verify active use."},
+                         output_file=str(out_dir / f"iam_role_{rname}_policies.json"))
+
+    log("[aws] IAM roles audit complete")
 
     # ── RDS ───────────────────────────────────────────────────────────────────
     _check_pause()
@@ -2121,6 +3051,62 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
                          output_file=str(out_dir / "cloudtrail_trails.json"))
             else:
                 log(f"[aws] {trail_name} — CloudWatch Logs integration OK")
+
+            # FORGE-AWS-284: CloudTrail Insights
+            log(f"[aws] {trail_name} — checking Insights...")
+            ins_resp = _aws_run(["cloudtrail", "get-insight-selectors", "--trail-name", trail_name],
+                                 f"cloudtrail_{trail_name}_insights.json") or {}
+            ins_selectors = ins_resp.get("InsightSelectors") or []
+            if not ins_selectors:
+                log(f"[aws] {trail_name} — Insights not enabled (LOW)")
+                finding(title=f"CloudTrail Insights not enabled: {trail_name}",
+                         severity="LOW",
+                         description=f"Trail {trail_name} does not have CloudTrail Insights enabled for anomaly detection.",
+                         data={"catalogue_id": "FORGE-AWS-284", "affected": trail_name,
+                               "remediation": "aws cloudtrail put-insight-selectors --trail-name <trail> --insight-selectors '[{\"InsightType\":\"ApiCallRateInsight\"},{\"InsightType\":\"ApiErrorRateInsight\"}]'"},
+                         output_file=str(out_dir / f"cloudtrail_{trail_name}_insights.json"))
+            else:
+                log(f"[aws] {trail_name} — Insights enabled")
+
+            # FORGE-AWS-285/286: CloudTrail S3 data events
+            log(f"[aws] {trail_name} — checking S3 data event logging...")
+            _ct_es_resp = _aws_run(["cloudtrail", "get-event-selectors", "--trail-name", trail_name],
+                                    f"cloudtrail_{trail_name}_event_selectors.json") or {}
+            _has_s3_read = False
+            _has_s3_write = False
+            for _es in _ct_es_resp.get("EventSelectors") or []:
+                for _dr in _es.get("DataResources") or []:
+                    if _dr.get("Type") == "AWS::S3::Object":
+                        rwt = _es.get("ReadWriteType", "")
+                        if rwt in ("ReadOnly", "All"):
+                            _has_s3_read = True
+                        if rwt in ("WriteOnly", "All"):
+                            _has_s3_write = True
+            # Also check advanced event selectors
+            for _aes in _ct_es_resp.get("AdvancedEventSelectors") or []:
+                for _fs in _aes.get("FieldSelectors") or []:
+                    if _fs.get("Field") == "resources.type" and "AWS::S3::Object" in (_fs.get("Equals") or []):
+                        _has_s3_read = True
+                        _has_s3_write = True
+            if not _has_s3_read:
+                log(f"[aws] {trail_name} — S3 read data events not logged (LOW)")
+                finding(title=f"CloudTrail S3 read data events not logged: {trail_name}",
+                         severity="LOW",
+                         description=f"Trail {trail_name} does not log S3 object-level read events.",
+                         data={"catalogue_id": "FORGE-AWS-285", "affected": trail_name,
+                               "remediation": "Add S3 data event logging with ReadWriteType=All to the trail."},
+                         output_file=str(out_dir / f"cloudtrail_{trail_name}_event_selectors.json"))
+            if not _has_s3_write:
+                log(f"[aws] {trail_name} — S3 write data events not logged (LOW)")
+                finding(title=f"CloudTrail S3 write data events not logged: {trail_name}",
+                         severity="LOW",
+                         description=f"Trail {trail_name} does not log S3 object-level write events.",
+                         data={"catalogue_id": "FORGE-AWS-286", "affected": trail_name,
+                               "remediation": "Add S3 data event logging with ReadWriteType=All to the trail."},
+                         output_file=str(out_dir / f"cloudtrail_{trail_name}_event_selectors.json"))
+            if _has_s3_read and _has_s3_write:
+                log(f"[aws] {trail_name} — S3 data events (read+write) logged OK")
+
     log(f"[aws] CloudTrail audit complete — {len(trails)} trail(s)")
 
     # ── KMS ───────────────────────────────────────────────────────────────────
@@ -2156,6 +3142,18 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
                          output_file=str(out_dir / f"kms_{key_id[:8]}_rotation.json"))
             else:
                 log(f"[aws] KMS {key_id[:8]} — rotation enabled OK")
+
+            # FORGE-AWS-411: Multi-region key check
+            if km.get("MultiRegion"):
+                log(f"[aws] KMS {key_id[:8]} — multi-region key (MEDIUM)")
+                finding(title=f"KMS customer-managed key is multi-region: {key_id[:8]}...",
+                         severity="MEDIUM",
+                         description="Customer-managed KMS key is configured as multi-region. "
+                                     "Multi-region keys have broader blast radius if compromised.",
+                         data={"catalogue_id": "FORGE-AWS-411", "affected": key_id,
+                               "remediation": "Evaluate whether multi-region is required. Prefer single-region keys for reduced blast radius."},
+                         output_file=str(out_dir / f"kms_{key_id[:8]}_detail.json"))
+
         else:
             log(f"[aws] KMS {key_id[:8]} — skipped (not customer-managed or not enabled)")
     log(f"[aws] KMS audit complete — checked {len(kms_keys)} key(s)")
@@ -2247,8 +3245,87 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
                      output_file=str(out_dir / "lambda_functions.json"))
         elif runtime:
             log(f"[aws] {fn_name} — runtime {runtime} OK")
+
+        # FORGE-AWS-280: Lambda not in VPC
+        _vpc_cfg = fn.get("VpcConfig") or {}
+        if not _vpc_cfg.get("VpcId"):
+            log(f"[aws] {fn_name} — not deployed inside a VPC (LOW)")
+            finding(title=f"Lambda function not in VPC: {fn_name}",
+                     severity="LOW",
+                     description=f"Lambda function {fn_name} is not deployed inside a VPC. "
+                                 "Functions accessing private resources should run within a VPC.",
+                     data={"catalogue_id": "FORGE-AWS-280", "affected": fn_name,
+                           "remediation": "Configure VPC settings in the function's networking configuration."},
+                     output_file=str(out_dir / "lambda_functions.json"))
+        else:
+            log(f"[aws] {fn_name} — in VPC {_vpc_cfg['VpcId']}")
+
+        # FORGE-AWS-281: Lambda no DLQ
+        _dlq = (fn.get("DeadLetterConfig") or {}).get("TargetArn", "")
+        if not _dlq:
+            log(f"[aws] {fn_name} — no dead letter queue configured (MEDIUM)")
+            finding(title=f"Lambda function missing dead letter queue: {fn_name}",
+                     severity="MEDIUM",
+                     description=f"Lambda function {fn_name} has no Dead Letter Queue (DLQ) configured. "
+                                 "Failed invocations will be silently discarded.",
+                     data={"catalogue_id": "FORGE-AWS-281", "affected": fn_name,
+                           "remediation": "Configure a Dead Letter Queue (SQS or SNS) for the function."},
+                     output_file=str(out_dir / "lambda_functions.json"))
+        else:
+            log(f"[aws] {fn_name} — DLQ configured")
+
+        # FORGE-AWS-282: Lambda env vars not encrypted with CMK
+        if env_vars and not fn.get("KMSKeyArn"):
+            log(f"[aws] {fn_name} — environment variables not encrypted with CMK (MEDIUM)")
+            finding(title=f"Lambda function env vars not encrypted with CMK: {fn_name}",
+                     severity="MEDIUM",
+                     description=f"Lambda function {fn_name} has environment variables encrypted with the "
+                                 "default Lambda service key, not a customer-managed KMS key.",
+                     data={"catalogue_id": "FORGE-AWS-282", "affected": fn_name,
+                           "remediation": "Configure a customer-managed KMS key for environment variable encryption."},
+                     output_file=str(out_dir / "lambda_functions.json"))
+
     log(f"[aws] Lambda audit complete — checked {len(lambda_fns)} function(s)")
     _refresh_intel()
+
+
+    # FORGE-AWS-283: Check if CloudTrail logs Lambda invoke operations
+    _check_pause()
+    log("[aws] Checking CloudTrail Lambda data event logging...")
+    _has_lambda_data_events = False
+    try:
+        for trail in trails:
+            trail_name = trail.get("Name", "")
+            es_resp = _aws_run(["cloudtrail", "get-event-selectors", "--trail-name", trail_name],
+                               f"cloudtrail_{trail_name}_event_selectors.json") or {}
+            for es in es_resp.get("EventSelectors") or []:
+                for dr in es.get("DataResources") or []:
+                    if dr.get("Type") == "AWS::Lambda::Function":
+                        _has_lambda_data_events = True
+                        break
+                if _has_lambda_data_events:
+                    break
+            # Also check advanced event selectors
+            for aes in es_resp.get("AdvancedEventSelectors") or []:
+                for fs in aes.get("FieldSelectors") or []:
+                    if fs.get("Field") == "resources.type" and "AWS::Lambda::Function" in (fs.get("Equals") or []):
+                        _has_lambda_data_events = True
+                        break
+            if _has_lambda_data_events:
+                break
+    except Exception:
+        pass
+    if not _has_lambda_data_events and lambda_fns:
+        log("[aws] CloudTrail does not log Lambda invoke operations (LOW)")
+        finding(title="CloudTrail: Lambda invoke API operations not logged",
+                 severity="LOW",
+                 description="No CloudTrail trail is configured to log Lambda Invoke data events. "
+                             "Function invocations are not auditable.",
+                 data={"catalogue_id": "FORGE-AWS-283",
+                       "remediation": "Add Lambda data event logging to a CloudTrail trail."},
+                 output_file=str(out_dir / "cloudtrail_trails.json"))
+    elif _has_lambda_data_events:
+        log("[aws] CloudTrail logs Lambda invoke operations OK")
 
     # ── VPC deep ──────────────────────────────────────────────────────────────
     _check_pause()
@@ -2294,6 +3371,32 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
                          output_file=str(out_dir / "ec2_security_groups.json"))
             else:
                 log(f"[aws] Default SG {sg_id} — no inbound rules (OK)")
+    # FORGE-AWS-1401: VPCs in multiple regions
+    _check_pause()
+    log("[aws] Checking for VPCs in multiple regions...")
+    _vpc_regions_with_vpcs = set()
+    _all_regions_resp = _aws_run(["ec2", "describe-regions", "--query", "Regions[].RegionName"],
+                                  "ec2_regions.json", use_region=False) or []
+    if isinstance(_all_regions_resp, list) and len(_all_regions_resp) > 1:
+        for _vr in _all_regions_resp[:20]:
+            _vr_vpcs = _aws_run(["ec2", "describe-vpcs", "--region", _vr,
+                                  "--query", "Vpcs[?IsDefault==`false`].VpcId"],
+                                  f"ec2_vpcs_{_vr}.json", use_region=False) or []
+            if isinstance(_vr_vpcs, list) and _vr_vpcs:
+                _vpc_regions_with_vpcs.add(_vr)
+        if len(_vpc_regions_with_vpcs) <= 1:
+            log(f"[aws] VPCs only in {len(_vpc_regions_with_vpcs)} region(s) (MEDIUM)")
+            finding(title="VPCs not distributed across multiple regions",
+                     severity="MEDIUM",
+                     description=f"Non-default VPCs exist in only {len(_vpc_regions_with_vpcs)} region(s). "
+                                 "Multi-region VPC deployment improves disaster recovery posture.",
+                     data={"catalogue_id": "FORGE-AWS-1401",
+                           "affected": ", ".join(_vpc_regions_with_vpcs) if _vpc_regions_with_vpcs else "none",
+                           "remediation": "Deploy workloads across multiple AWS regions for resilience."},
+                     output_file=str(out_dir / "ec2_regions.json"))
+        else:
+            log(f"[aws] VPCs present in {len(_vpc_regions_with_vpcs)} regions: {', '.join(sorted(_vpc_regions_with_vpcs))}")
+
     log("[aws] VPC deep audit complete")
 
     # ── IAM deep ──────────────────────────────────────────────────────────────
@@ -2333,6 +3436,35 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
                      output_file=str(out_dir / "iam_password_policy.json"))
         else:
             log("[aws] Password policy meets complexity requirements")
+
+        # Password expiry (FORGE-AWS-240)
+        max_age = pp.get("MaxPasswordAge", 0)
+        if not max_age or max_age > 90:
+            log(f"[aws] Password policy — no expiry or > 90 days (max_age={max_age}) (MEDIUM)")
+            finding(title="IAM: Password policy does not enforce expiration within 90 days",
+                     severity="MEDIUM",
+                     description=f"Account password policy MaxPasswordAge is {max_age or 'not set'}. "
+                                 "Passwords should expire within 90 days.",
+                     data={"catalogue_id": "FORGE-AWS-240", "affected": "account",
+                           "remediation": "aws iam update-account-password-policy --max-password-age 90"},
+                     output_file=str(out_dir / "iam_password_policy.json"))
+        else:
+            log(f"[aws] Password policy — expires in {max_age} days OK")
+
+        # Password reuse prevention (FORGE-AWS-241)
+        reuse_prev = pp.get("PasswordReusePrevention", 0)
+        if not reuse_prev or reuse_prev < 24:
+            log(f"[aws] Password policy — reuse prevention {reuse_prev} (should be >=24) (MEDIUM)")
+            finding(title="IAM: Password policy does not prevent reuse of 24 passwords",
+                     severity="MEDIUM",
+                     description=f"Account password policy PasswordReusePrevention is {reuse_prev or 'not set'}. "
+                                 "Should prevent reuse of the last 24 passwords.",
+                     data={"catalogue_id": "FORGE-AWS-241", "affected": "account",
+                           "remediation": "aws iam update-account-password-policy --password-reuse-prevention 24"},
+                     output_file=str(out_dir / "iam_password_policy.json"))
+        else:
+            log(f"[aws] Password policy — reuse prevention {reuse_prev} OK")
+
     else:
         if "iam" in _denied_services:
             log("[aws] Password policy — AccessDenied (cannot determine status)")
@@ -2537,6 +3669,78 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
                      output_file=str(out_dir / "guardduty_detectors.json"))
     else:
         log(f"[aws] GuardDuty enabled — {len(gd_detectors)} detector(s)")
+
+        _check_pause()
+        for _det_id in gd_detectors:
+            log(f"[aws] Checking GuardDuty detector {_det_id} features...")
+            _det_resp = _aws_run(["guardduty", "get-detector", "--detector-id", _det_id],
+                                  f"guardduty_{_det_id}_detail.json") or {}
+            _features = _det_resp.get("Features") or []
+            _feature_map = {f.get("Name", ""): f.get("Status", "") for f in _features}
+
+            # FORGE-AWS-293: Runtime Monitoring
+            if _feature_map.get("RUNTIME_MONITORING") != "ENABLED":
+                log(f"[aws] GuardDuty {_det_id} — Runtime Monitoring not enabled (HIGH)")
+                finding(title=f"GuardDuty Runtime Monitoring not enabled",
+                         severity="HIGH",
+                         description="GuardDuty Runtime Monitoring is not enabled — runtime threat detection for EC2/ECS/EKS is absent.",
+                         data={"catalogue_id": "FORGE-AWS-293", "affected": _det_id,
+                               "remediation": "Enable Runtime Monitoring in GuardDuty detector settings."},
+                         output_file=str(out_dir / f"guardduty_{_det_id}_detail.json"))
+            else:
+                log(f"[aws] GuardDuty {_det_id} — Runtime Monitoring enabled")
+
+            # FORGE-AWS-294: Lambda Protection
+            if _feature_map.get("LAMBDA_NETWORK_LOGS") != "ENABLED":
+                log(f"[aws] GuardDuty {_det_id} — Lambda Protection not enabled (HIGH)")
+                finding(title=f"GuardDuty Lambda Protection not enabled",
+                         severity="HIGH",
+                         description="GuardDuty Lambda Protection is not enabled — Lambda network activity is not monitored for threats.",
+                         data={"catalogue_id": "FORGE-AWS-294", "affected": _det_id,
+                               "remediation": "Enable Lambda Protection in GuardDuty detector settings."},
+                         output_file=str(out_dir / f"guardduty_{_det_id}_detail.json"))
+            else:
+                log(f"[aws] GuardDuty {_det_id} — Lambda Protection enabled")
+
+            # FORGE-AWS-296: EKS Runtime Monitoring
+            if _feature_map.get("EKS_RUNTIME_MONITORING") != "ENABLED":
+                log(f"[aws] GuardDuty {_det_id} — EKS Runtime Monitoring not enabled (MEDIUM)")
+                finding(title=f"GuardDuty EKS Runtime Monitoring not enabled",
+                         severity="MEDIUM",
+                         description="GuardDuty EKS Runtime Monitoring is not enabled.",
+                         data={"catalogue_id": "FORGE-AWS-296", "affected": _det_id,
+                               "remediation": "Enable EKS Runtime Monitoring in GuardDuty settings."},
+                         output_file=str(out_dir / f"guardduty_{_det_id}_detail.json"))
+
+            # FORGE-AWS-1001: AI Protection
+            if _feature_map.get("AI_PROTECTION") != "ENABLED":
+                log(f"[aws] GuardDuty {_det_id} — AI Protection not enabled (HIGH)")
+                finding(title=f"GuardDuty AI Protection not enabled",
+                         severity="HIGH",
+                         description="GuardDuty AI Protection is not enabled — AI-related threats and model abuse are not monitored.",
+                         data={"catalogue_id": "FORGE-AWS-1001", "affected": _det_id,
+                               "remediation": "Enable AI Protection in GuardDuty detector settings."},
+                         output_file=str(out_dir / f"guardduty_{_det_id}_detail.json"))
+            else:
+                log(f"[aws] GuardDuty {_det_id} — AI Protection enabled")
+
+            # FORGE-AWS-297: Centrally managed
+            _admin_resp = _aws_run(["guardduty", "get-administrator-account", "--detector-id", _det_id],
+                                    f"guardduty_{_det_id}_admin.json") or {}
+            _admin = _admin_resp.get("Administrator") or {}
+            if not _admin.get("AccountId"):
+                _members_resp = _aws_run(["guardduty", "list-members", "--detector-id", _det_id, "--max-results", "1"],
+                                          f"guardduty_{_det_id}_members.json") or {}
+                _members = _members_resp.get("Members") or []
+                if not _members:
+                    log(f"[aws] GuardDuty {_det_id} — not centrally managed (MEDIUM)")
+                    finding(title="GuardDuty not centrally managed",
+                             severity="MEDIUM",
+                             description="GuardDuty detector is not managed by an administrator account and has no member accounts.",
+                             data={"catalogue_id": "FORGE-AWS-297", "affected": _det_id,
+                                   "remediation": "Configure GuardDuty with a delegated administrator for centralized management."},
+                             output_file=str(out_dir / f"guardduty_{_det_id}_admin.json"))
+
     log("[aws] GuardDuty audit complete")
 
     # ── Security Hub ──────────────────────────────────────────────────────────
@@ -2558,6 +3762,22 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
                      output_file=str(out_dir / "securityhub_hub.json"))
     else:
         log(f"[aws] Security Hub enabled — {sh_resp.get('HubArn', '')}")
+
+    # FORGE-AWS-102: SecurityHub delegated admin
+    _sh_admin = _aws_run(["securityhub", "list-organization-admin-accounts"],
+                          "securityhub_admin_accounts.json") or {}
+    if not (_sh_admin.get("AdminAccounts") or []):
+        if "securityhub" not in _denied_services:
+            log("[aws] Security Hub — no delegated administrator configured (HIGH)")
+            finding(title="Security Hub: No delegated administrator",
+                     severity="HIGH",
+                     description="Security Hub does not have a delegated administrator account configured "
+                                 "for centralized security management across the organization.",
+                     data={"catalogue_id": "FORGE-AWS-102",
+                           "remediation": "Designate a Security Hub delegated administrator via AWS Organizations."},
+                     output_file=str(out_dir / "securityhub_admin_accounts.json"))
+    else:
+        log(f"[aws] Security Hub delegated admin configured")
     log("[aws] Security Hub audit complete")
     _refresh_intel()
 
@@ -2645,6 +3865,154 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
         log("[aws] All CloudWatch log groups have retention policies")
     log("[aws] CloudWatch Logs audit complete")
 
+    # -- CloudWatch CIS Metric Filter Checks --
+    _check_pause()
+    _save_checkpoint()
+    log("[aws] Starting CloudWatch CIS metric filter/alarm audit...")
+    status("aws", "CloudWatch CIS audit", "running")
+
+    # Collect all CloudWatch alarms
+    _cw_alarms_resp = _aws_run(["cloudwatch", "describe-alarms", "--max-records", "200"],
+                                "cloudwatch_alarms.json") or {}
+    _cw_alarms = _cw_alarms_resp.get("MetricAlarms") or []
+    log(f"[aws] Found {len(_cw_alarms)} CloudWatch alarm(s)")
+
+    # FORGE-AWS-270: Alarms with actions disabled
+    _disabled_alarms = [a for a in _cw_alarms if not a.get("ActionsEnabled", True)]
+    if _disabled_alarms:
+        log(f"[aws] {len(_disabled_alarms)} alarm(s) have actions disabled (HIGH)")
+        finding(title=f"CloudWatch alarms with actions disabled ({len(_disabled_alarms)} alarm(s))",
+                 severity="HIGH",
+                 description=f"{len(_disabled_alarms)} CloudWatch alarms have ActionsEnabled=false — "
+                             "they will not trigger notifications or actions when breached.",
+                 data={"catalogue_id": "FORGE-AWS-270",
+                       "affected": f"{len(_disabled_alarms)} alarm(s)",
+                       "remediation": "Enable actions on all CloudWatch alarms."},
+                 output_file=str(out_dir / "cloudwatch_alarms.json"))
+
+    # FORGE-AWS-271: Alarms without ALARM state actions
+    _no_action_alarms = [a for a in _cw_alarms if not (a.get("AlarmActions") or [])]
+    if _no_action_alarms:
+        log(f"[aws] {len(_no_action_alarms)} alarm(s) have no ALARM actions configured (HIGH)")
+        finding(title=f"CloudWatch alarms without ALARM actions ({len(_no_action_alarms)} alarm(s))",
+                 severity="HIGH",
+                 description=f"{len(_no_action_alarms)} CloudWatch alarms have no actions configured for the ALARM state.",
+                 data={"catalogue_id": "FORGE-AWS-271",
+                       "affected": f"{len(_no_action_alarms)} alarm(s)",
+                       "remediation": "Configure AlarmActions (e.g., SNS topic) on all CloudWatch alarms."},
+                 output_file=str(out_dir / "cloudwatch_alarms.json"))
+
+    # CIS metric filter checks — table-driven
+    # Build a map of all metric names that have alarms
+    _alarmed_metrics = set()
+    for a in _cw_alarms:
+        mn = a.get("MetricName", "")
+        ns = a.get("Namespace", "")
+        if mn:
+            _alarmed_metrics.add((ns, mn))
+
+    # Get the CloudTrail log group name (if trail delivers to CW Logs)
+    _ct_log_group = ""
+    try:
+        for trail in trails:
+            _lg_arn = trail.get("CloudWatchLogsLogGroupArn", "")
+            if _lg_arn:
+                # ARN format: arn:aws:logs:region:account:log-group:NAME:*
+                parts = _lg_arn.split(":")
+                if len(parts) >= 7:
+                    _ct_log_group = parts[6]
+                    break
+    except Exception:
+        pass
+
+    _cis_metric_filters = []
+    if _ct_log_group:
+        log(f"[aws] CloudTrail log group: {_ct_log_group}")
+        mf_resp = _aws_run(["logs", "describe-metric-filters", "--log-group-name", _ct_log_group,
+                             "--limit", "50"],
+                            "cloudwatch_metric_filters.json") or {}
+        _cis_metric_filters = mf_resp.get("metricFilters") or []
+        log(f"[aws] Found {len(_cis_metric_filters)} metric filter(s) on trail log group")
+    else:
+        log("[aws] No CloudTrail→CloudWatch Logs integration — cannot check CIS metric filters")
+
+    # Build set of filter patterns that exist + have alarms
+    _active_filter_metrics = set()
+    for mf in _cis_metric_filters:
+        for mt in mf.get("metricTransformations") or []:
+            mn = mt.get("metricName", "")
+            ns = mt.get("metricNamespace", "")
+            if (ns, mn) in _alarmed_metrics:
+                _active_filter_metrics.add(mf.get("filterName", "").lower())
+                _active_filter_metrics.add(mn.lower())
+                _pat = (mf.get("filterPattern") or "").lower()
+                _active_filter_metrics.add(_pat[:60])
+
+    _CIS_CHECKS = [
+        ("FORGE-AWS-250", "Unauthorized API calls",
+         ["unauthorizedaccess", "accessdenied", "errorcode"]),
+        ("FORGE-AWS-251", "Console sign-in without MFA",
+         ["consolelogin", "mfaused"]),
+        ("FORGE-AWS-252", "Root account usage",
+         ["root", "useridentity"]),
+        ("FORGE-AWS-253", "IAM policy changes",
+         ["createpolicy", "deletepolicy", "attachpolicy", "detachpolicy", "putrolepolicy"]),
+        ("FORGE-AWS-254", "CloudTrail configuration changes",
+         ["createtrail", "updatetrail", "deletetrail", "startlogging", "stoplogging"]),
+        ("FORGE-AWS-255", "Console authentication failures",
+         ["consolelogin", "failed"]),
+        ("FORGE-AWS-256", "KMS CMK disable or scheduled deletion",
+         ["disablekey", "schedulekeydeletion"]),
+        ("FORGE-AWS-257", "S3 bucket policy changes",
+         ["putbucketpolicy", "deletebucketpolicy", "putbucketacl"]),
+        ("FORGE-AWS-258", "AWS Config configuration changes",
+         ["stoprecorder", "deletedelivery", "putdelivery", "putconfiguration"]),
+        ("FORGE-AWS-259", "Security group changes",
+         ["authorizesecuritygroup", "revokesecuritygroup", "createsecuritygroup", "deletesecuritygroup"]),
+        ("FORGE-AWS-260", "Network ACL changes",
+         ["createnetworkacl", "deletenetworkacl", "replacenetworkacl"]),
+        ("FORGE-AWS-261", "Network gateway changes",
+         ["createcustomergateway", "deletecustomergateway", "attachinternetgateway", "detachinternetgateway"]),
+        ("FORGE-AWS-262", "Route table changes",
+         ["createroutetable", "deleteroutetable", "replaceroute", "createroute", "deleteroute"]),
+        ("FORGE-AWS-263", "VPC changes",
+         ["createvpc", "deletevpc", "modifyvpc", "createvpcpeering", "deletevpcpeering"]),
+        ("FORGE-AWS-264", "AWS Organizations changes",
+         ["organizations", "inviteaccount", "leaveorganization"]),
+    ]
+
+    if _ct_log_group:
+        for cat_id, label, keywords in _CIS_CHECKS:
+            _found = False
+            for token in _active_filter_metrics:
+                if any(kw in token for kw in keywords):
+                    _found = True
+                    break
+            if not _found:
+                log(f"[aws] CIS check missing: {label} ({cat_id}) (MEDIUM)")
+                finding(title=f"CloudWatch: No metric filter/alarm for {label}",
+                         severity="MEDIUM",
+                         description=f"CIS Benchmark requires a CloudWatch Logs metric filter and alarm for "
+                                     f"{label}. No matching filter+alarm was found on log group {_ct_log_group}.",
+                         data={"catalogue_id": cat_id, "affected": _ct_log_group,
+                               "remediation": f"Create a metric filter on {_ct_log_group} matching {label} events, then create a CloudWatch alarm on that metric."},
+                         output_file=str(out_dir / "cloudwatch_metric_filters.json"))
+            else:
+                log(f"[aws] CIS check OK: {label}")
+    else:
+        # No CloudTrail->CW integration — emit a single finding covering all CIS checks
+        log("[aws] CloudTrail not integrated with CloudWatch — all CIS metric filter checks are gaps")
+        finding(title="CloudWatch: No CloudTrail log group for CIS metric filter checks",
+                 severity="MEDIUM",
+                 description="CloudTrail does not deliver events to a CloudWatch Logs log group. "
+                             "CIS Benchmark requires 15+ metric filters and alarms on CloudTrail events "
+                             "which cannot be assessed without this integration.",
+                 data={"catalogue_id": "FORGE-AWS-250", "affected": "account",
+                       "remediation": "Configure CloudTrail to deliver events to a CloudWatch Logs log group, then create the CIS-required metric filters and alarms."},
+                 output_file=str(out_dir / "cloudwatch_metric_filters.json"))
+    log("[aws] CloudWatch CIS audit complete")
+
+
     # ── OpenSearch ────────────────────────────────────────────────────────────
     _check_pause()
     _save_checkpoint()
@@ -2712,6 +4080,68 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
                      output_file=str(out_dir / "secretsmanager_secrets.json"))
         else:
             log(f"[aws] Secret {s_name} — rotation enabled")
+
+        # FORGE-AWS-301: Restrictive resource policy
+        log(f"[aws] Secret {s_name} — checking resource policy...")
+        _srp_resp = _aws_run(["secretsmanager", "get-resource-policy", "--secret-id", s_name],
+                              f"secretsmanager_{s_name}_policy.json") or {}
+        _srp = _srp_resp.get("ResourcePolicy", "")
+        if _srp:
+            try:
+                _srp_doc = json.loads(_srp)
+                for _stmt in _srp_doc.get("Statement") or []:
+                    _p = _stmt.get("Principal", "")
+                    _p_val = _p.get("AWS", "") if isinstance(_p, dict) else _p
+                    if _p_val == "*" and not (_stmt.get("Condition") or {}):
+                        log(f"[aws] Secret {s_name} — resource policy allows Principal=* (HIGH)")
+                        finding(title=f"Secrets Manager secret publicly accessible: {s_name}",
+                                 severity="HIGH",
+                                 description=f"Secret {s_name} has a resource policy granting Principal=* without conditions.",
+                                 data={"catalogue_id": "FORGE-AWS-301", "affected": s_name,
+                                       "remediation": "Restrict the resource policy to specific accounts/principals."},
+                                 output_file=str(out_dir / f"secretsmanager_{s_name}_policy.json"))
+                        break
+            except (json.JSONDecodeError, TypeError):
+                pass
+        else:
+            log(f"[aws] Secret {s_name} — no resource policy (default account access)")
+
+        # FORGE-AWS-302: Secret rotated periodically
+        _last_rotated = secret.get("LastRotatedDate", "")
+        if _last_rotated:
+            try:
+                _lr_str = _last_rotated if isinstance(_last_rotated, str) else str(_last_rotated)
+                _lr_dt = datetime.fromisoformat(_lr_str.replace("Z", "+00:00"))
+                _rot_days = (datetime.now(timezone.utc) - _lr_dt).days
+                if _rot_days > 90:
+                    log(f"[aws] Secret {s_name} — last rotated {_rot_days} days ago (MEDIUM)")
+                    finding(title=f"Secrets Manager secret not rotated recently: {s_name}",
+                             severity="MEDIUM",
+                             description=f"Secret {s_name} was last rotated {_rot_days} days ago (threshold: 90 days).",
+                             data={"catalogue_id": "FORGE-AWS-302", "affected": s_name,
+                                   "remediation": "Configure automatic rotation or manually rotate the secret."},
+                             output_file=str(out_dir / "secretsmanager_secrets.json"))
+            except Exception:
+                pass
+
+        # FORGE-AWS-303: Secret unused
+        _last_accessed = secret.get("LastAccessedDate", "")
+        if _last_accessed:
+            try:
+                _la_str = _last_accessed if isinstance(_last_accessed, str) else str(_last_accessed)
+                _la_dt = datetime.fromisoformat(_la_str.replace("Z", "+00:00"))
+                _unused_d = (datetime.now(timezone.utc) - _la_dt).days
+                if _unused_d > 90:
+                    log(f"[aws] Secret {s_name} — not accessed for {_unused_d} days (MEDIUM)")
+                    finding(title=f"Secrets Manager secret unused for {_unused_d} days: {s_name}",
+                             severity="MEDIUM",
+                             description=f"Secret {s_name} has not been accessed in {_unused_d} days.",
+                             data={"catalogue_id": "FORGE-AWS-303", "affected": s_name,
+                                   "remediation": "Review whether this secret is still needed and delete if unused."},
+                             output_file=str(out_dir / "secretsmanager_secrets.json"))
+            except Exception:
+                pass
+
     log(f"[aws] Secrets Manager audit complete — checked {len(sm_secrets)} secret(s)")
 
     # ── CloudFront ────────────────────────────────────────────────────────────
@@ -2768,6 +4198,101 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
                      output_file=str(out_dir / "cloudfront_distributions.json"))
         else:
             log(f"[aws] CloudFront {dist_label} — viewer protocol OK ({vpp})")
+
+        # FORGE-AWS-287: Default root object
+        if not dist.get("DefaultRootObject"):
+            log(f"[aws] CloudFront {dist_label} — no default root object (HIGH)")
+            finding(title=f"CloudFront distribution missing default root object: {dist_label}",
+                     severity="HIGH",
+                     description=f"CloudFront distribution {dist_id} has no default root object. "
+                                 "Requests to the root URL may expose the S3 bucket contents.",
+                     data={"catalogue_id": "FORGE-AWS-287", "affected": dist_label,
+                           "remediation": "Set a default root object (e.g., index.html) in the distribution settings."},
+                     output_file=str(out_dir / "cloudfront_distributions.json"))
+        else:
+            log(f"[aws] CloudFront {dist_label} — default root object: {dist.get('DefaultRootObject')}")
+
+        # FORGE-AWS-288: Geo restrictions
+        _geo = (dist.get("Restrictions") or {}).get("GeoRestriction") or {}
+        if _geo.get("RestrictionType") == "none":
+            log(f"[aws] CloudFront {dist_label} — no geo restrictions (LOW)")
+            finding(title=f"CloudFront distribution without geo restrictions: {dist_label}",
+                     severity="LOW",
+                     description=f"CloudFront distribution {dist_id} has no geographic restrictions configured.",
+                     data={"catalogue_id": "FORGE-AWS-288", "affected": dist_label,
+                           "remediation": "Configure geo restrictions to limit access by country."},
+                     output_file=str(out_dir / "cloudfront_distributions.json"))
+        else:
+            log(f"[aws] CloudFront {dist_label} — geo restrictions: {_geo.get('RestrictionType')}")
+
+        # FORGE-AWS-289: Origin traffic encryption
+        _origins = (dist.get("Origins") or {}).get("Items") or []
+        for _origin in _origins:
+            _coc = _origin.get("CustomOriginConfig") or {}
+            if _coc and _coc.get("OriginProtocolPolicy") == "http-only":
+                _oid = _origin.get("Id", "")
+                log(f"[aws] CloudFront {dist_label} — origin {_oid} uses HTTP only (MEDIUM)")
+                finding(title=f"CloudFront origin traffic not encrypted: {dist_label}/{_oid}",
+                         severity="MEDIUM",
+                         description=f"CloudFront distribution {dist_id} origin {_oid} uses OriginProtocolPolicy=http-only. "
+                                     "Traffic between CloudFront and the origin is unencrypted.",
+                         data={"catalogue_id": "FORGE-AWS-289", "affected": f"{dist_label}/{_oid}",
+                               "remediation": "Change OriginProtocolPolicy to https-only or match-viewer."},
+                         output_file=str(out_dir / "cloudfront_distributions.json"))
+
+        # FORGE-AWS-290: S3 Origin Access Control
+        for _origin in _origins:
+            _s3_domain = _origin.get("DomainName", "")
+            if ".s3." in _s3_domain or _s3_domain.endswith(".s3.amazonaws.com"):
+                _has_oac = bool(_origin.get("OriginAccessControlId"))
+                _has_oai = bool((_origin.get("S3OriginConfig") or {}).get("OriginAccessIdentity"))
+                if not _has_oac and not _has_oai:
+                    _oid = _origin.get("Id", "")
+                    log(f"[aws] CloudFront {dist_label} — S3 origin {_oid} missing OAC/OAI (MEDIUM)")
+                    finding(title=f"CloudFront S3 origin without access control: {dist_label}/{_oid}",
+                             severity="MEDIUM",
+                             description=f"CloudFront distribution {dist_id} S3 origin {_oid} has neither "
+                                         "Origin Access Control (OAC) nor Origin Access Identity (OAI). "
+                                         "The S3 bucket may need to be public for CloudFront to access it.",
+                             data={"catalogue_id": "FORGE-AWS-290", "affected": f"{dist_label}/{_oid}",
+                                   "remediation": "Configure Origin Access Control (OAC) for the S3 origin."},
+                             output_file=str(out_dir / "cloudfront_distributions.json"))
+
+    # FORGE-AWS-1101: CloudFront Field Level Encryption
+    _check_pause()
+    log("[aws] Checking CloudFront field-level encryption configs...")
+    _fle_resp = _aws_run(["cloudfront", "list-field-level-encryption-configs"],
+                          "cloudfront_fle_configs.json", use_region=False) or {}
+    _fle_items = (_fle_resp.get("FieldLevelEncryptionList") or {}).get("Items") or []
+    if dist_list and not _fle_items:
+        log("[aws] No CloudFront field-level encryption configs found (LOW)")
+        finding(title="CloudFront: No field-level encryption configured",
+                 severity="LOW",
+                 description="No CloudFront field-level encryption configurations exist. "
+                             "Sensitive data in POST requests is not encrypted at the edge.",
+                 data={"catalogue_id": "FORGE-AWS-1101",
+                       "remediation": "Create a field-level encryption configuration for distributions handling sensitive form data."},
+                 output_file=str(out_dir / "cloudfront_fle_configs.json"))
+    elif _fle_items:
+        log(f"[aws] Found {len(_fle_items)} field-level encryption config(s)")
+
+    # FORGE-AWS-1102: CloudFront PQC TLS
+    for dist in dist_list:
+        dist_id = dist.get("Id", "")
+        aliases = (dist.get("Aliases") or {}).get("Items") or []
+        dist_label = aliases[0] if aliases else dist_id
+        _vc = dist.get("ViewerCertificate") or {}
+        _min_proto = _vc.get("MinimumProtocolVersion", "")
+        if _min_proto and "PQCTLSv1" not in _min_proto:
+            log(f"[aws] CloudFront {dist_label} — not using PQC TLS (LOW)")
+            finding(title=f"CloudFront distribution not using post-quantum TLS: {dist_label}",
+                     severity="LOW",
+                     description=f"CloudFront distribution {dist_id} uses TLS security policy '{_min_proto}' "
+                                 "which does not enforce post-quantum key exchange.",
+                     data={"catalogue_id": "FORGE-AWS-1102", "affected": dist_label,
+                           "remediation": "Update the security policy to one with PQC TLS 1.3 support."},
+                     output_file=str(out_dir / "cloudfront_distributions.json"))
+
     log(f"[aws] CloudFront audit complete — checked {len(dist_list)} distribution(s)")
 
     # ── DynamoDB ──────────────────────────────────────────────────────────────
@@ -2799,6 +4324,68 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
                      output_file=str(out_dir / f"dynamodb_{tbl_name}_detail.json"))
         else:
             log(f"[aws] DynamoDB {tbl_name} — customer-managed SSE enabled")
+
+        # FORGE-AWS-298: DynamoDB deletion protection
+        if not tbl.get("DeletionProtectionEnabled"):
+            log(f"[aws] DynamoDB {tbl_name} — deletion protection disabled (MEDIUM)")
+            finding(title=f"DynamoDB table deletion protection disabled: {tbl_name}",
+                     severity="MEDIUM",
+                     description=f"DynamoDB table {tbl_name} does not have deletion protection enabled.",
+                     data={"catalogue_id": "FORGE-AWS-298", "affected": tbl_name,
+                           "remediation": "aws dynamodb update-table --table-name <table> --deletion-protection-enabled"},
+                     output_file=str(out_dir / f"dynamodb_{tbl_name}_detail.json"))
+        else:
+            log(f"[aws] DynamoDB {tbl_name} — deletion protection enabled")
+
+        # FORGE-AWS-299: DynamoDB PITR
+        _pitr_resp = _aws_run(["dynamodb", "describe-continuous-backups", "--table-name", tbl_name],
+                               f"dynamodb_{tbl_name}_backups.json") or {}
+        _pitr_desc = (_pitr_resp.get("ContinuousBackupsDescription") or {}).get("PointInTimeRecoveryDescription") or {}
+        if _pitr_desc.get("PointInTimeRecoveryStatus") != "ENABLED":
+            log(f"[aws] DynamoDB {tbl_name} — PITR not enabled (MEDIUM)")
+            finding(title=f"DynamoDB table PITR not enabled: {tbl_name}",
+                     severity="MEDIUM",
+                     description=f"DynamoDB table {tbl_name} does not have point-in-time recovery (PITR) enabled.",
+                     data={"catalogue_id": "FORGE-AWS-299", "affected": tbl_name,
+                           "remediation": "aws dynamodb update-continuous-backups --table-name <table> --point-in-time-recovery-specification PointInTimeRecoveryEnabled=true"},
+                     output_file=str(out_dir / f"dynamodb_{tbl_name}_backups.json"))
+        else:
+            log(f"[aws] DynamoDB {tbl_name} — PITR enabled")
+
+    # FORGE-AWS-1201: DynamoDB tables protected by backup plan
+    _check_pause()
+    log("[aws] Checking DynamoDB tables against AWS Backup plans...")
+    _ddb_backup_selections = set()
+    try:
+        _bp_resp = _aws_run(["backup", "list-backup-plans"], "backup_plans_ddb.json") or {}
+        for _bp in (_bp_resp.get("BackupPlansList") or []):
+            _bp_id = _bp.get("BackupPlanId", "")
+            _sel_resp = _aws_run(["backup", "list-backup-selections", "--backup-plan-id", _bp_id],
+                                  f"backup_{_bp_id}_selections.json") or {}
+            for _sel in (_sel_resp.get("BackupSelectionsList") or []):
+                _sel_id = _sel.get("SelectionId", "")
+                _sel_detail = _aws_run(["backup", "get-backup-selection",
+                                        "--backup-plan-id", _bp_id, "--selection-id", _sel_id],
+                                        f"backup_{_bp_id}_{_sel_id}.json") or {}
+                _sel_data = _sel_detail.get("BackupSelection") or {}
+                for _r in _sel_data.get("Resources") or []:
+                    if ":dynamodb:" in _r or _r == "*":
+                        _ddb_backup_selections.add("*")
+                    if ":table/" in _r:
+                        _ddb_backup_selections.add(_r.rsplit("/", 1)[-1])
+    except Exception:
+        pass
+    if "*" not in _ddb_backup_selections:
+        for tbl_name in ddb_tables:
+            if tbl_name not in _ddb_backup_selections:
+                log(f"[aws] DynamoDB {tbl_name} — not protected by a backup plan (MEDIUM)")
+                finding(title=f"DynamoDB table not protected by backup plan: {tbl_name}",
+                         severity="MEDIUM",
+                         description=f"DynamoDB table {tbl_name} is not covered by any AWS Backup plan.",
+                         data={"catalogue_id": "FORGE-AWS-1201", "affected": tbl_name,
+                               "remediation": "Add the DynamoDB table to an AWS Backup plan."},
+                         output_file=str(out_dir / "backup_plans_ddb.json"))
+
     log(f"[aws] DynamoDB audit complete — checked {len(ddb_tables)} table(s)")
     _refresh_intel()
 
@@ -2834,7 +4421,700 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
                          data={"catalogue_id": "FORGE-AWS-130", "affected": f"{td_name}/{c_name}",
                                "remediation": "Use ECS secrets (valueFrom) with Secrets Manager or SSM Parameter Store instead of plaintext environment variables."},
                          output_file=str(out_dir / f"ecs_{td_name}_detail.json"))
+
+            # FORGE-AWS-306: Check logging configuration mode
+            _log_cfg = cdef.get("logConfiguration") or {}
+            _log_opts = _log_cfg.get("options") or {}
+            if _log_opts.get("mode") == "blocking":
+                log(f"[aws] ECS {td_name}/{c_name} — logging in blocking mode (LOW)")
+                finding(title=f"ECS task definition uses blocking log mode: {td_name}/{c_name}",
+                         severity="LOW",
+                         description=f"Container {c_name} in task definition {td_name} uses blocking log mode. "
+                                     "If the logging driver is unavailable, the container will block.",
+                         data={"catalogue_id": "FORGE-AWS-306", "affected": f"{td_name}/{c_name}",
+                               "remediation": "Set logging options mode to 'non-blocking' with max-buffer-size."},
+                         output_file=str(out_dir / f"ecs_{td_name}_detail.json"))
+
     log(f"[aws] ECS audit complete — checked {len(ecs_arns)} task definition(s)")
+
+    # FORGE-AWS-304: ECS cluster Container Insights
+    _check_pause()
+    log("[aws] Checking ECS cluster Container Insights...")
+    ecs_clusters_resp = _aws_run(["ecs", "list-clusters"], "ecs_clusters.json") or {}
+    ecs_cluster_arns = ecs_clusters_resp.get("clusterArns") or []
+    if ecs_cluster_arns:
+        _check_pause()
+        ecs_desc_resp = _aws_run(["ecs", "describe-clusters", "--clusters"] + ecs_cluster_arns[:10] +
+                                  ["--include", "SETTINGS"],
+                                  "ecs_clusters_detail.json") or {}
+        for _cl in ecs_desc_resp.get("clusters") or []:
+            _cl_name = _cl.get("clusterName", "")
+            _cl_settings = _cl.get("settings") or []
+            _ci_enabled = any(s.get("name") == "containerInsights" and s.get("value") == "enabled"
+                              for s in _cl_settings)
+            if not _ci_enabled:
+                log(f"[aws] ECS cluster {_cl_name} — Container Insights not enabled (MEDIUM)")
+                finding(title=f"ECS cluster Container Insights disabled: {_cl_name}",
+                         severity="MEDIUM",
+                         description=f"ECS cluster {_cl_name} does not have Container Insights enabled for monitoring.",
+                         data={"catalogue_id": "FORGE-AWS-304", "affected": _cl_name,
+                               "remediation": "aws ecs update-cluster-settings --cluster <name> --settings name=containerInsights,value=enabled"},
+                         output_file=str(out_dir / "ecs_clusters_detail.json"))
+            else:
+                log(f"[aws] ECS cluster {_cl_name} — Container Insights enabled")
+
+        # FORGE-AWS-305: ECS service public IP assignment
+        for _cl_arn in ecs_cluster_arns[:10]:
+            _cl_short = _cl_arn.rsplit("/", 1)[-1] if "/" in _cl_arn else _cl_arn
+            _svcs_resp = _aws_run(["ecs", "list-services", "--cluster", _cl_arn, "--max-results", "20"],
+                                   f"ecs_{_cl_short}_services.json") or {}
+            _svc_arns = _svcs_resp.get("serviceArns") or []
+            if _svc_arns:
+                _check_pause()
+                _svc_desc = _aws_run(["ecs", "describe-services", "--cluster", _cl_arn,
+                                       "--services"] + _svc_arns[:10],
+                                      f"ecs_{_cl_short}_services_detail.json") or {}
+                for _svc in _svc_desc.get("services") or []:
+                    _svc_name = _svc.get("serviceName", "")
+                    _net_cfg = (_svc.get("networkConfiguration") or {}).get("awsvpcConfiguration") or {}
+                    if _net_cfg.get("assignPublicIp") == "ENABLED":
+                        log(f"[aws] ECS service {_svc_name} — assigns public IP (HIGH)")
+                        finding(title=f"ECS service assigns public IP: {_svc_name}",
+                                 severity="HIGH",
+                                 description=f"ECS service {_svc_name} in cluster {_cl_short} assigns public IP addresses to tasks.",
+                                 data={"catalogue_id": "FORGE-AWS-305", "affected": f"{_cl_short}/{_svc_name}",
+                                       "remediation": "Set assignPublicIp to DISABLED and use a load balancer for public access."},
+                                 output_file=str(out_dir / f"ecs_{_cl_short}_services_detail.json"))
+
+    # ── ELBv2 ─────────────────────────────────────────────────────────────────
+    _check_pause()
+    _save_checkpoint()
+    log("[aws] Starting ELBv2 audit...")
+    status("aws", "ELBv2 audit", "running")
+    _elb_resp = _aws_run(["elbv2", "describe-load-balancers"], "elbv2_load_balancers.json") or {}
+    _elbs = _elb_resp.get("LoadBalancers") or []
+    log(f"[aws] Found {len(_elbs)} ELBv2 load balancer(s)")
+    _check_pause()
+    for _lb in _elbs:
+        _lb_arn = _lb.get("LoadBalancerArn", "")
+        _lb_name = _lb.get("LoadBalancerName", "")
+        _lb_type = _lb.get("Type", "")
+        log(f"[aws] Checking ELBv2 {_lb_name} ({_lb_type})...")
+
+        # FORGE-AWS-310: Deletion protection
+        _lb_attrs_resp = _aws_run(["elbv2", "describe-load-balancer-attributes",
+                                    "--load-balancer-arn", _lb_arn],
+                                   f"elbv2_{_lb_name}_attrs.json") or {}
+        _lb_attrs = {a.get("Key"): a.get("Value") for a in (_lb_attrs_resp.get("Attributes") or [])}
+        if _lb_attrs.get("deletion_protection.enabled") != "true":
+            log(f"[aws] ELBv2 {_lb_name} — deletion protection disabled (MEDIUM)")
+            finding(title=f"ELBv2 deletion protection disabled: {_lb_name}",
+                     severity="MEDIUM",
+                     description=f"Load balancer {_lb_name} does not have deletion protection enabled.",
+                     data={"catalogue_id": "FORGE-AWS-310", "affected": _lb_name,
+                           "remediation": "aws elbv2 modify-load-balancer-attributes --load-balancer-arn <arn> --attributes Key=deletion_protection.enabled,Value=true"},
+                     output_file=str(out_dir / f"elbv2_{_lb_name}_attrs.json"))
+        else:
+            log(f"[aws] ELBv2 {_lb_name} — deletion protection enabled")
+
+        # FORGE-AWS-311: Drop invalid header fields (ALB only)
+        if _lb_type == "application":
+            if _lb_attrs.get("routing.http.drop_invalid_header_fields.enabled") != "true":
+                log(f"[aws] ELBv2 {_lb_name} — does not drop invalid header fields (MEDIUM)")
+                finding(title=f"ALB does not drop invalid header fields: {_lb_name}",
+                         severity="MEDIUM",
+                         description=f"Application Load Balancer {_lb_name} does not drop invalid HTTP header fields. "
+                                     "This could allow HTTP request smuggling attacks.",
+                         data={"catalogue_id": "FORGE-AWS-311", "affected": _lb_name,
+                               "remediation": "Enable routing.http.drop_invalid_header_fields.enabled attribute."},
+                         output_file=str(out_dir / f"elbv2_{_lb_name}_attrs.json"))
+
+        # FORGE-AWS-312/313: Listener TLS policies
+        log(f"[aws] ELBv2 {_lb_name} — checking listeners...")
+        _listeners_resp = _aws_run(["elbv2", "describe-listeners", "--load-balancer-arn", _lb_arn],
+                                    f"elbv2_{_lb_name}_listeners.json") or {}
+        for _listener in _listeners_resp.get("Listeners") or []:
+            _proto = _listener.get("Protocol", "")
+            if _proto in ("HTTPS", "TLS"):
+                _ssl_pol = _listener.get("SslPolicy", "")
+                _port = _listener.get("Port", "")
+                if _ssl_pol and "FIPS" not in _ssl_pol:
+                    log(f"[aws] ELBv2 {_lb_name}:{_port} — non-FIPS TLS policy {_ssl_pol} (LOW)")
+                    finding(title=f"ELBv2 listener without FIPS TLS policy: {_lb_name}:{_port}",
+                             severity="LOW",
+                             description=f"Listener on {_lb_name} port {_port} uses TLS policy {_ssl_pol} which is not FIPS-compliant.",
+                             data={"catalogue_id": "FORGE-AWS-312", "affected": f"{_lb_name}:{_port}",
+                                   "remediation": "Update the listener SSL policy to a FIPS-compliant policy."},
+                             output_file=str(out_dir / f"elbv2_{_lb_name}_listeners.json"))
+                # FORGE-AWS-505: PQC TLS for ELBv2
+                if _ssl_pol and "PQ" not in _ssl_pol.upper() and "PostQuantum" not in _ssl_pol:
+                    log(f"[aws] ELBv2 {_lb_name}:{_port} — no post-quantum TLS policy (LOW)")
+                    finding(title=f"ELBv2 listener without post-quantum TLS policy: {_lb_name}:{_port}",
+                             severity="LOW",
+                             description=f"Listener on {_lb_name} port {_port} uses TLS policy {_ssl_pol} "
+                                         "which does not support post-quantum key exchange.",
+                             data={"catalogue_id": "FORGE-AWS-505", "affected": f"{_lb_name}:{_port}",
+                                   "remediation": "Update the listener SSL policy to a PQ-TLS-supporting policy."},
+                             output_file=str(out_dir / f"elbv2_{_lb_name}_listeners.json"))
+    log(f"[aws] ELBv2 audit complete — checked {len(_elbs)} load balancer(s)")
+
+    # ── IAM Access Analyzer ───────────────────────────────────────────────────
+    _check_pause()
+    _save_checkpoint()
+    log("[aws] Starting IAM Access Analyzer audit...")
+    status("aws", "Access Analyzer audit", "running")
+    _aa_resp = _aws_run(["accessanalyzer", "list-analyzers"], "accessanalyzer_analyzers.json") or {}
+    _analyzers = _aa_resp.get("analyzers") or []
+    if not _analyzers:
+        if "accessanalyzer" not in _denied_services:
+            log("[aws] IAM Access Analyzer not enabled (LOW)")
+            finding(title="IAM Access Analyzer not enabled",
+                     severity="LOW",
+                     description="No IAM Access Analyzer is configured in this region. "
+                                 "Access Analyzer identifies resources shared with external entities.",
+                     data={"catalogue_id": "FORGE-AWS-320",
+                           "remediation": "aws accessanalyzer create-analyzer --analyzer-name default --type ACCOUNT"},
+                     output_file=str(out_dir / "accessanalyzer_analyzers.json"))
+    else:
+        log(f"[aws] IAM Access Analyzer enabled — {len(_analyzers)} analyzer(s)")
+    log("[aws] IAM Access Analyzer audit complete")
+
+    # ── AWS Config ────────────────────────────────────────────────────────────
+    _check_pause()
+    _save_checkpoint()
+    log("[aws] Starting AWS Config audit...")
+    status("aws", "AWS Config audit", "running")
+    _cfg_recorders = _aws_run(["configservice", "describe-configuration-recorders"],
+                               "config_recorders.json") or {}
+    _recorders = _cfg_recorders.get("ConfigurationRecorders") or []
+    _cfg_status = _aws_run(["configservice", "describe-configuration-recorder-status"],
+                            "config_recorder_status.json") or {}
+    _rec_statuses = _cfg_status.get("ConfigurationRecordersStatus") or []
+    _rec_recording = any(s.get("recording") for s in _rec_statuses)
+    if not _recorders or not _rec_recording:
+        if "configservice" not in _denied_services:
+            log("[aws] AWS Config recorder not enabled or not recording (MEDIUM)")
+            finding(title="AWS Config recorder not enabled",
+                     severity="MEDIUM",
+                     description="AWS Config is not recording resource configurations in this region.",
+                     data={"catalogue_id": "FORGE-AWS-330",
+                           "remediation": "Enable AWS Config recording for all resource types."},
+                     output_file=str(out_dir / "config_recorders.json"))
+    else:
+        log(f"[aws] AWS Config recorder active — {len(_recorders)} recorder(s)")
+
+    _cfg_agg = _aws_run(["configservice", "describe-configuration-aggregators"],
+                          "config_aggregators.json") or {}
+    if not (_cfg_agg.get("ConfigurationAggregators") or []):
+        if "configservice" not in _denied_services:
+            log("[aws] No AWS Config aggregator configured (HIGH)")
+            finding(title="AWS Config: No configuration aggregator",
+                     severity="HIGH",
+                     description="No AWS Config aggregator is configured — cross-account/cross-region configuration visibility is absent.",
+                     data={"catalogue_id": "FORGE-AWS-331",
+                           "remediation": "Create an organization or account aggregator in AWS Config."},
+                     output_file=str(out_dir / "config_aggregators.json"))
+    else:
+        log("[aws] AWS Config aggregator configured")
+    log("[aws] AWS Config audit complete")
+
+    # ── Inspector ─────────────────────────────────────────────────────────────
+    _check_pause()
+    _save_checkpoint()
+    log("[aws] Starting Inspector audit...")
+    status("aws", "Inspector audit", "running")
+    _insp_resp = _aws_run(["inspector2", "batch-get-account-status"],
+                           "inspector2_account_status.json") or {}
+    _insp_accounts = _insp_resp.get("accounts") or []
+    _insp_enabled = False
+    for _ia in _insp_accounts:
+        if (_ia.get("state") or {}).get("status") == "ENABLED":
+            _insp_enabled = True
+            break
+    if not _insp_enabled:
+        if "inspector2" not in _denied_services:
+            log("[aws] Inspector not enabled (MEDIUM)")
+            finding(title="Inspector not enabled",
+                     severity="MEDIUM",
+                     description="Amazon Inspector is not enabled — automated vulnerability scanning for EC2, ECR, and Lambda is absent.",
+                     data={"catalogue_id": "FORGE-AWS-340",
+                           "remediation": "aws inspector2 enable --resource-types EC2 ECR LAMBDA LAMBDA_CODE"},
+                     output_file=str(out_dir / "inspector2_account_status.json"))
+    else:
+        log("[aws] Inspector enabled")
+        # FORGE-AWS-341: Inspector2 active findings
+        _insp_findings = _aws_run(["inspector2", "list-findings",
+                                    "--filter-criteria", '{"findingStatus":[{"comparison":"EQUALS","value":"ACTIVE"}]}',
+                                    "--max-results", "10"],
+                                   "inspector2_active_findings.json") or {}
+        _active_f = _insp_findings.get("findings") or []
+        if _active_f:
+            log(f"[aws] Inspector — {len(_active_f)}+ active finding(s) (HIGH)")
+            finding(title=f"Inspector2 has active findings ({len(_active_f)}+)",
+                     severity="HIGH",
+                     description=f"Amazon Inspector has {len(_active_f)}+ active vulnerability findings that require remediation.",
+                     data={"catalogue_id": "FORGE-AWS-341",
+                           "affected": f"{len(_active_f)}+ finding(s)",
+                           "remediation": "Review and remediate active Inspector findings."},
+                     output_file=str(out_dir / "inspector2_active_findings.json"))
+        else:
+            log("[aws] Inspector — no active findings")
+
+        # FORGE-AWS-511: Inspector2 active findings age check
+        if _active_f:
+            from datetime import datetime as _dt, timezone as _tz
+            _now = _dt.now(_tz.utc)
+            _max_age_days = 90
+            for _af in _active_f:
+                _created = _af.get("firstObservedAt", "") or _af.get("createdAt", "")
+                if _created:
+                    try:
+                        _created_dt = _dt.fromisoformat(_created.replace("Z", "+00:00"))
+                        _age = (_now - _created_dt).days
+                        if _age > _max_age_days:
+                            _ftitle = _af.get("title", "Unknown")[:80]
+                            log(f"[aws] Inspector finding older than {_max_age_days} days: {_ftitle} ({_age}d) (MEDIUM)")
+                            finding(title=f"Inspector2 finding older than {_max_age_days} days",
+                                     severity="MEDIUM",
+                                     description=f"Active Inspector finding \"{_ftitle}\" is {_age} days old (max: {_max_age_days}). "
+                                                 "Aging findings indicate unresolved vulnerabilities.",
+                                     data={"catalogue_id": "FORGE-AWS-511",
+                                           "affected": _ftitle,
+                                           "remediation": "Remediate or suppress aged Inspector findings."},
+                                     output_file=str(out_dir / "inspector2_active_findings.json"))
+                            break
+                    except (ValueError, TypeError):
+                        pass
+
+        # FORGE-AWS-342: Inspector2 coverage
+        _insp_cov = _aws_run(["inspector2", "list-coverage", "--max-results", "50"],
+                              "inspector2_coverage.json") or {}
+        _cov_resources = _insp_cov.get("coveredResources") or []
+        _inactive_cov = [r for r in _cov_resources
+                         if r.get("scanStatus", {}).get("statusCode") != "ACTIVE"]
+        if _inactive_cov:
+            log(f"[aws] Inspector — {len(_inactive_cov)} resource(s) not actively scanned (MEDIUM)")
+            finding(title=f"Inspector2 resources not actively scanned ({len(_inactive_cov)})",
+                     severity="MEDIUM",
+                     description=f"{len(_inactive_cov)} resources covered by Inspector are not in ACTIVE scan status.",
+                     data={"catalogue_id": "FORGE-AWS-342",
+                           "affected": f"{len(_inactive_cov)} resource(s)",
+                           "remediation": "Investigate why covered resources are not being actively scanned."},
+                     output_file=str(out_dir / "inspector2_coverage.json"))
+        # FORGE-AWS-343: Resources not recently scanned
+        from datetime import datetime as _dt2, timezone as _tz2
+        _stale_scan_days = 30
+        _stale_count = 0
+        for _cr in _cov_resources:
+            _ls = _cr.get("lastScannedAt", "")
+            if _ls:
+                try:
+                    _ls_dt = _dt2.fromisoformat(str(_ls).replace("Z", "+00:00"))
+                    if (_dt2.now(_tz2.utc) - _ls_dt).days > _stale_scan_days:
+                        _stale_count += 1
+                except (ValueError, TypeError):
+                    pass
+        if _stale_count:
+            log(f"[aws] Inspector — {_stale_count} resource(s) not scanned in {_stale_scan_days}+ days (MEDIUM)")
+            finding(title=f"Inspector2 resources not recently scanned ({_stale_count})",
+                     severity="MEDIUM",
+                     description=f"{_stale_count} Inspector-covered resource(s) were not scanned in the last {_stale_scan_days} days.",
+                     data={"catalogue_id": "FORGE-AWS-343",
+                           "affected": f"{_stale_count} resource(s)",
+                           "remediation": "Ensure Inspector SSM agent is running and resources are reachable."},
+                     output_file=str(out_dir / "inspector2_coverage.json"))
+    log("[aws] Inspector audit complete")
+
+    # ── EKS ───────────────────────────────────────────────────────────────────
+    _check_pause()
+    _save_checkpoint()
+    log("[aws] Starting EKS audit...")
+    status("aws", "EKS audit", "running")
+    _eks_resp = _aws_run(["eks", "list-clusters"], "eks_clusters.json") or {}
+    _eks_clusters = _eks_resp.get("clusters") or []
+    log(f"[aws] Found {len(_eks_clusters)} EKS cluster(s)")
+    _check_pause()
+    for _eks_name in _eks_clusters:
+        _check_pause()
+        log(f"[aws] Checking EKS cluster {_eks_name}...")
+        _eks_detail = _aws_run(["eks", "describe-cluster", "--name", _eks_name],
+                                f"eks_{_eks_name}_detail.json") or {}
+        _cl = _eks_detail.get("cluster") or {}
+
+        # FORGE-AWS-350: Control plane logging
+        _logging = _cl.get("logging") or {}
+        _log_types_enabled = set()
+        for _lc in (_logging.get("clusterLogging") or []):
+            if _lc.get("enabled"):
+                _log_types_enabled.update(_lc.get("types") or [])
+        _required_types = {"api", "audit", "authenticator", "controllerManager", "scheduler"}
+        _missing_types = _required_types - _log_types_enabled
+        if _missing_types:
+            log(f"[aws] EKS {_eks_name} — missing log types: {sorted(_missing_types)} (MEDIUM)")
+            finding(title=f"EKS cluster control plane logging incomplete: {_eks_name}",
+                     severity="MEDIUM",
+                     description=f"EKS cluster {_eks_name} is missing control plane log types: {', '.join(sorted(_missing_types))}.",
+                     data={"catalogue_id": "FORGE-AWS-350", "affected": _eks_name,
+                           "remediation": "aws eks update-cluster-config --name <cluster> --logging '{\"clusterLogging\":[{\"types\":[\"api\",\"audit\",\"authenticator\",\"controllerManager\",\"scheduler\"],\"enabled\":true}]}'"},
+                     output_file=str(out_dir / f"eks_{_eks_name}_detail.json"))
+        else:
+            log(f"[aws] EKS {_eks_name} — all control plane log types enabled")
+
+        # FORGE-AWS-351: Deletion protection
+        if not _cl.get("deletionProtection"):
+            log(f"[aws] EKS {_eks_name} — deletion protection not enabled (HIGH)")
+            finding(title=f"EKS cluster deletion protection not enabled: {_eks_name}",
+                     severity="HIGH",
+                     description=f"EKS cluster {_eks_name} does not have deletion protection enabled.",
+                     data={"catalogue_id": "FORGE-AWS-351", "affected": _eks_name,
+                           "remediation": "aws eks update-cluster-config --name <cluster> --deletion-protection true"},
+                     output_file=str(out_dir / f"eks_{_eks_name}_detail.json"))
+    log(f"[aws] EKS audit complete — checked {len(_eks_clusters)} cluster(s)")
+
+    # ── Cognito ───────────────────────────────────────────────────────────────
+    _check_pause()
+    _save_checkpoint()
+    log("[aws] Starting Cognito audit...")
+    status("aws", "Cognito audit", "running")
+    _cog_resp = _aws_run(["cognito-idp", "list-user-pools", "--max-results", "60"],
+                          "cognito_user_pools.json") or {}
+    _cog_pools = _cog_resp.get("UserPools") or []
+    log(f"[aws] Found {len(_cog_pools)} Cognito user pool(s)")
+    _check_pause()
+    for _pool in _cog_pools:
+        _pool_id = _pool.get("Id", "")
+        _pool_name = _pool.get("Name", _pool_id)
+        log(f"[aws] Checking Cognito user pool {_pool_name}...")
+        _pool_detail = _aws_run(["cognito-idp", "describe-user-pool", "--user-pool-id", _pool_id],
+                                 f"cognito_{_pool_id}_detail.json") or {}
+        _up = _pool_detail.get("UserPool") or {}
+
+        # FORGE-AWS-360: MFA
+        _mfa_cfg = _up.get("MfaConfiguration", "OFF")
+        if _mfa_cfg == "OFF":
+            log(f"[aws] Cognito {_pool_name} — MFA disabled (MEDIUM)")
+            finding(title=f"Cognito user pool MFA disabled: {_pool_name}",
+                     severity="MEDIUM",
+                     description=f"Cognito user pool {_pool_name} has MFA set to OFF.",
+                     data={"catalogue_id": "FORGE-AWS-360", "affected": _pool_name,
+                           "remediation": "Enable MFA (OPTIONAL or ON) for the user pool."},
+                     output_file=str(out_dir / f"cognito_{_pool_id}_detail.json"))
+        else:
+            log(f"[aws] Cognito {_pool_name} — MFA: {_mfa_cfg}")
+
+        # FORGE-AWS-361: Deletion protection
+        if _up.get("DeletionProtection") != "ACTIVE":
+            log(f"[aws] Cognito {_pool_name} — deletion protection not active (MEDIUM)")
+            finding(title=f"Cognito user pool deletion protection disabled: {_pool_name}",
+                     severity="MEDIUM",
+                     description=f"Cognito user pool {_pool_name} does not have deletion protection enabled.",
+                     data={"catalogue_id": "FORGE-AWS-361", "affected": _pool_name,
+                           "remediation": "Enable deletion protection for the user pool."},
+                     output_file=str(out_dir / f"cognito_{_pool_id}_detail.json"))
+
+        # FORGE-AWS-362: Password policy minimum length
+        _pp = (_up.get("Policies") or {}).get("PasswordPolicy") or {}
+        _min_len = _pp.get("MinimumLength", 0)
+        if _min_len < 14:
+            log(f"[aws] Cognito {_pool_name} — password min length {_min_len} (< 14) (MEDIUM)")
+            finding(title=f"Cognito user pool weak password policy: {_pool_name}",
+                     severity="MEDIUM",
+                     description=f"Cognito user pool {_pool_name} requires minimum password length of {_min_len} "
+                                 "(should be at least 14).",
+                     data={"catalogue_id": "FORGE-AWS-362", "affected": _pool_name,
+                           "remediation": "Update the password policy to require minimum 14 characters."},
+                     output_file=str(out_dir / f"cognito_{_pool_id}_detail.json"))
+
+        # FORGE-AWS-363: User pool client prevent user existence errors
+        _clients_resp = _aws_run(["cognito-idp", "list-user-pool-clients",
+                                   "--user-pool-id", _pool_id, "--max-results", "20"],
+                                  f"cognito_{_pool_id}_clients.json") or {}
+        for _client in (_clients_resp.get("UserPoolClients") or []):
+            _cid = _client.get("ClientId", "")
+            _cname = _client.get("ClientName", _cid)
+            _cd = _aws_run(["cognito-idp", "describe-user-pool-client",
+                             "--user-pool-id", _pool_id, "--client-id", _cid],
+                            f"cognito_{_pool_id}_{_cid}_detail.json") or {}
+            _upc = _cd.get("UserPoolClient") or {}
+            if _upc.get("PreventUserExistenceErrors") != "ENABLED":
+                log(f"[aws] Cognito client {_cname} — does not prevent user existence errors (MEDIUM)")
+                finding(title=f"Cognito client does not prevent user existence errors: {_cname}",
+                         severity="MEDIUM",
+                         description=f"Cognito user pool client {_cname} (pool {_pool_name}) does not prevent "
+                                     "user existence errors. Attackers can enumerate valid usernames.",
+                         data={"catalogue_id": "FORGE-AWS-363", "affected": f"{_pool_name}/{_cname}",
+                               "remediation": "Enable PreventUserExistenceErrors on the user pool client."},
+                         output_file=str(out_dir / f"cognito_{_pool_id}_{_cid}_detail.json"))
+    log(f"[aws] Cognito audit complete — checked {len(_cog_pools)} user pool(s)")
+
+    # ── SSM Patch Compliance ──────────────────────────────────────────────────
+    _check_pause()
+    _save_checkpoint()
+    log("[aws] Starting SSM patch compliance audit...")
+    status("aws", "SSM audit", "running")
+    _ssm_resp = _aws_run(["ssm", "describe-instance-information", "--max-results", "50"],
+                          "ssm_managed_instances.json") or {}
+    _ssm_instances = _ssm_resp.get("InstanceInformationList") or []
+    log(f"[aws] Found {len(_ssm_instances)} SSM managed instance(s)")
+    _check_pause()
+    _noncompliant_count = 0
+    for _mi in _ssm_instances:
+        _mi_id = _mi.get("InstanceId", "")
+        _comp_resp = _aws_run(["ssm", "list-compliance-items",
+                                "--resource-ids", _mi_id,
+                                "--resource-types", "ManagedInstance",
+                                "--filters", "Key=ComplianceType,Values=Patch,Type=EQUAL",
+                                "--max-results", "50"],
+                               f"ssm_{_mi_id}_compliance.json") or {}
+        _comp_items = _comp_resp.get("ComplianceItems") or []
+        _nc = [c for c in _comp_items if c.get("Status") == "NON_COMPLIANT"]
+        if _nc:
+            _noncompliant_count += 1
+            log(f"[aws] SSM {_mi_id} — {len(_nc)} non-compliant patch(es) (HIGH)")
+            finding(title=f"SSM managed instance non-compliant with patching: {_mi_id}",
+                     severity="HIGH",
+                     description=f"Managed instance {_mi_id} has {len(_nc)} non-compliant patches.",
+                     data={"catalogue_id": "FORGE-AWS-370", "affected": _mi_id,
+                           "remediation": "Apply missing patches via Systems Manager Patch Manager."},
+                     output_file=str(out_dir / f"ssm_{_mi_id}_compliance.json"))
+    if _noncompliant_count == 0 and _ssm_instances:
+        log("[aws] All SSM managed instances are patch-compliant")
+    log("[aws] SSM audit complete")
+
+    # ── AWS Backup ────────────────────────────────────────────────────────────
+    _check_pause()
+    _save_checkpoint()
+    log("[aws] Starting AWS Backup audit...")
+    status("aws", "Backup audit", "running")
+    _bkp_rp = _aws_run(["backup", "list-report-plans"], "backup_report_plans.json") or {}
+    if not (_bkp_rp.get("ReportPlans") or []):
+        if "backup" not in _denied_services:
+            log("[aws] No AWS Backup report plans configured (LOW)")
+            finding(title="AWS Backup: No report plans configured",
+                     severity="LOW",
+                     description="No AWS Backup report plans are configured for compliance auditing.",
+                     data={"catalogue_id": "FORGE-AWS-380",
+                           "remediation": "Create an AWS Backup report plan for backup compliance monitoring."},
+                     output_file=str(out_dir / "backup_report_plans.json"))
+    else:
+        log(f"[aws] AWS Backup report plans: {len(_bkp_rp.get('ReportPlans', []))}")
+    log("[aws] AWS Backup audit complete")
+
+    # ── CloudFormation ────────────────────────────────────────────────────────
+    _check_pause()
+    _save_checkpoint()
+    log("[aws] Starting CloudFormation audit...")
+    status("aws", "CloudFormation audit", "running")
+    _cfn_resp = _aws_run(["cloudformation", "list-stacks",
+                           "--stack-status-filter", "CREATE_COMPLETE", "UPDATE_COMPLETE",
+                           "UPDATE_ROLLBACK_COMPLETE"],
+                          "cloudformation_stacks.json") or {}
+    _cfn_stacks = _cfn_resp.get("StackSummaries") or []
+    log(f"[aws] Found {len(_cfn_stacks)} CloudFormation stack(s)")
+    _check_pause()
+    _no_term_count = 0
+    for _stk in _cfn_stacks:
+        _stk_name = _stk.get("StackName", "")
+        _stk_detail = _aws_run(["cloudformation", "describe-stacks", "--stack-name", _stk_name],
+                                f"cfn_{_stk_name}_detail.json") or {}
+        _stk_info = (_stk_detail.get("Stacks") or [{}])[0]
+        if not _stk_info.get("EnableTerminationProtection"):
+            _no_term_count += 1
+    if _no_term_count > 0:
+        log(f"[aws] {_no_term_count} CloudFormation stack(s) without termination protection (MEDIUM)")
+        finding(title=f"CloudFormation stacks without termination protection ({_no_term_count} stack(s))",
+                 severity="MEDIUM",
+                 description=f"{_no_term_count} of {len(_cfn_stacks)} CloudFormation stacks do not have termination protection enabled.",
+                 data={"catalogue_id": "FORGE-AWS-390",
+                       "affected": f"{_no_term_count} stack(s)",
+                       "remediation": "aws cloudformation update-termination-protection --enable-termination-protection --stack-name <name>"},
+                 output_file=str(out_dir / "cloudformation_stacks.json"))
+    else:
+        log("[aws] All CloudFormation stacks have termination protection")
+    log("[aws] CloudFormation audit complete")
+
+    # ── Bedrock ───────────────────────────────────────────────────────────────
+    _check_pause()
+    _save_checkpoint()
+    log("[aws] Starting Bedrock audit...")
+    status("aws", "Bedrock audit", "running")
+    _br_log = _aws_run(["bedrock", "get-model-invocation-logging-configuration"],
+                        "bedrock_logging.json") or {}
+    _br_log_cfg = _br_log.get("loggingConfig") or {}
+    if not _br_log_cfg:
+        if "bedrock" not in _denied_services:
+            log("[aws] Bedrock model invocation logging not configured (MEDIUM)")
+            finding(title="Bedrock model invocation logging not enabled",
+                     severity="MEDIUM",
+                     description="Amazon Bedrock does not have model invocation logging configured.",
+                     data={"catalogue_id": "FORGE-AWS-400",
+                           "remediation": "Configure model invocation logging in Amazon Bedrock settings."},
+                     output_file=str(out_dir / "bedrock_logging.json"))
+    else:
+        log("[aws] Bedrock model invocation logging configured")
+
+    _br_gr = _aws_run(["bedrock", "list-guardrails"], "bedrock_guardrails.json") or {}
+    if not (_br_gr.get("guardrails") or []):
+        if "bedrock" not in _denied_services:
+            log("[aws] No Bedrock guardrails configured (MEDIUM)")
+            finding(title="Bedrock: No guardrails configured",
+                     severity="MEDIUM",
+                     description="No Amazon Bedrock guardrails are configured to enforce content filtering and safety controls.",
+                     data={"catalogue_id": "FORGE-AWS-401",
+                           "remediation": "Create at least one Bedrock guardrail for content filtering."},
+                     output_file=str(out_dir / "bedrock_guardrails.json"))
+    else:
+        log(f"[aws] Bedrock guardrails: {len(_br_gr.get('guardrails', []))}")
+
+    # FORGE-AWS-402: Bedrock prompt management exists
+    _br_prompts = _aws_run(["bedrock-agent", "list-prompts"], "bedrock_prompts.json") or {}
+    if not (_br_prompts.get("promptSummaries") or []):
+        if "bedrock" not in _denied_services and "bedrock-agent" not in _denied_services:
+            log("[aws] No Bedrock prompt management prompts (LOW)")
+            finding(title="Bedrock: No prompt management prompts exist",
+                     severity="LOW",
+                     description="No Amazon Bedrock Prompt Management prompts are configured. Prompt Management "
+                                 "enables centralized creation, versioning, and management of prompts for generative AI applications.",
+                     data={"catalogue_id": "FORGE-AWS-402",
+                           "remediation": "Create prompts in Amazon Bedrock Prompt Management to standardize and version AI interactions."},
+                     output_file=str(out_dir / "bedrock_prompts.json"))
+    else:
+        log(f"[aws] Bedrock prompt management prompts: {len(_br_prompts.get('promptSummaries', []))}")
+    log("[aws] Bedrock audit complete")
+
+    # ── SageMaker ─────────────────────────────────────────────────────────────
+    _check_pause()
+    _save_checkpoint()
+    log("[aws] Starting SageMaker audit...")
+    status("aws", "SageMaker audit", "running")
+
+    # FORGE-AWS-440: SageMaker Clarify processing jobs exist
+    _sm_clarify = _aws_run(["sagemaker", "list-processing-jobs",
+                             "--name-contains", "clarify"], "sagemaker_clarify_jobs.json") or {}
+    _sm_clarify_jobs = _sm_clarify.get("ProcessingJobSummaries") or []
+    if not _sm_clarify_jobs:
+        if "sagemaker" not in _denied_services:
+            log("[aws] No SageMaker Clarify processing jobs (LOW)")
+            finding(title="SageMaker: No Clarify processing jobs exist",
+                     severity="LOW",
+                     description="No Amazon SageMaker Clarify processing jobs exist. SageMaker Clarify helps "
+                                 "detect bias in ML models and explain model predictions for responsible AI.",
+                     data={"catalogue_id": "FORGE-AWS-440",
+                           "remediation": "Create SageMaker Clarify processing jobs to evaluate ML models for bias and explainability."},
+                     output_file=str(out_dir / "sagemaker_clarify_jobs.json"))
+    else:
+        log(f"[aws] SageMaker Clarify jobs: {len(_sm_clarify_jobs)}")
+
+    # FORGE-AWS-441: SageMaker monitoring schedule exists
+    _sm_monitors = _aws_run(["sagemaker", "list-monitoring-schedules"], "sagemaker_monitoring_schedules.json") or {}
+    _sm_sched_list = _sm_monitors.get("MonitoringScheduleSummaries") or []
+    if not _sm_sched_list:
+        if "sagemaker" not in _denied_services:
+            log("[aws] No SageMaker monitoring schedules (LOW)")
+            finding(title="SageMaker: No monitoring schedules configured",
+                     severity="LOW",
+                     description="No Amazon SageMaker monitoring schedules are configured. Model monitoring detects "
+                                 "data drift, model drift, and quality degradation in deployed ML models.",
+                     data={"catalogue_id": "FORGE-AWS-441",
+                           "remediation": "Create a SageMaker Model Monitor monitoring schedule for deployed endpoints."},
+                     output_file=str(out_dir / "sagemaker_monitoring_schedules.json"))
+    else:
+        log(f"[aws] SageMaker monitoring schedules: {len(_sm_sched_list)}")
+
+    # FORGE-AWS-442: SageMaker Model Registry in use (at least one approved model package)
+    _sm_mpg = _aws_run(["sagemaker", "list-model-package-groups"], "sagemaker_model_registry.json") or {}
+    _sm_groups = _sm_mpg.get("ModelPackageGroupSummaryList") or []
+    _has_approved = False
+    for _mpg in _sm_groups:
+        _mpg_name = _mpg.get("ModelPackageGroupName", "")
+        _mp_resp = _aws_run(["sagemaker", "list-model-packages",
+                              "--model-package-group-name", _mpg_name,
+                              "--model-approval-status", "Approved",
+                              "--max-results", "1"],
+                             f"sagemaker_mpg_{_mpg_name}_approved.json") or {}
+        if _mp_resp.get("ModelPackageSummaryList"):
+            _has_approved = True
+            break
+    if not _has_approved:
+        if "sagemaker" not in _denied_services:
+            log("[aws] SageMaker Model Registry has no approved model packages (LOW)")
+            finding(title="SageMaker: Model Registry has no approved model packages",
+                     severity="LOW",
+                     description="Amazon SageMaker Model Registry contains no approved model packages. "
+                                 "The registry provides a central hub for versioning, approving, and deploying ML models.",
+                     data={"catalogue_id": "FORGE-AWS-442",
+                           "remediation": "Register and approve model packages in SageMaker Model Registry for governed ML deployment."},
+                     output_file=str(out_dir / "sagemaker_model_registry.json"))
+    else:
+        log(f"[aws] SageMaker Model Registry has approved packages")
+    log(f"[aws] SageMaker audit complete")
+
+    # ── DLM ───────────────────────────────────────────────────────────────────
+    _check_pause()
+    log("[aws] Checking DLM lifecycle policies...")
+    _dlm_resp = _aws_run(["dlm", "get-lifecycle-policies"], "dlm_policies.json") or {}
+    _dlm_policies = _dlm_resp.get("Policies") or []
+    if not _dlm_policies:
+        if "dlm" not in _denied_services:
+            log("[aws] No DLM EBS snapshot lifecycle policies (MEDIUM)")
+            finding(title="DLM: No EBS snapshot lifecycle policies",
+                     severity="MEDIUM",
+                     description="No Data Lifecycle Manager policies exist for automated EBS snapshot management.",
+                     data={"catalogue_id": "FORGE-AWS-410",
+                           "remediation": "Create a DLM lifecycle policy for EBS snapshot automation."},
+                     output_file=str(out_dir / "dlm_policies.json"))
+    else:
+        log(f"[aws] DLM lifecycle policies: {len(_dlm_policies)}")
+
+    # ── Auto Scaling ──────────────────────────────────────────────────────────
+    _check_pause()
+    _save_checkpoint()
+    log("[aws] Starting Auto Scaling audit...")
+    status("aws", "Auto Scaling audit", "running")
+    _asg_resp = _aws_run(["autoscaling", "describe-auto-scaling-groups"], "autoscaling_groups.json") or {}
+    _asgs = _asg_resp.get("AutoScalingGroups") or []
+    log(f"[aws] Found {len(_asgs)} Auto Scaling group(s)")
+    for _asg in _asgs:
+        _asg_name = _asg.get("AutoScalingGroupName", "")
+        _azs = _asg.get("AvailabilityZones") or []
+        if len(_azs) < 2:
+            log(f"[aws] ASG {_asg_name} — single AZ ({_azs}) (MEDIUM)")
+            finding(title=f"Auto Scaling group in single AZ: {_asg_name}",
+                     severity="MEDIUM",
+                     description=f"Auto Scaling group {_asg_name} uses only {len(_azs)} Availability Zone(s). "
+                                 "Multi-AZ deployment provides high availability.",
+                     data={"catalogue_id": "FORGE-AWS-420", "affected": _asg_name,
+                           "remediation": "Add additional Availability Zones to the Auto Scaling group."},
+                     output_file=str(out_dir / "autoscaling_groups.json"))
+        _mip = _asg.get("MixedInstancesPolicy")
+        if not _mip:
+            log(f"[aws] ASG {_asg_name} — single instance type (MEDIUM)")
+            finding(title=f"Auto Scaling group uses single instance type: {_asg_name}",
+                     severity="MEDIUM",
+                     description=f"Auto Scaling group {_asg_name} does not use a mixed instances policy. "
+                                 "Multiple instance types improve availability and cost optimization.",
+                     data={"catalogue_id": "FORGE-AWS-421", "affected": _asg_name,
+                           "remediation": "Configure a mixed instances policy with multiple instance types."},
+                     output_file=str(out_dir / "autoscaling_groups.json"))
+    log(f"[aws] Auto Scaling audit complete — checked {len(_asgs)} group(s)")
+
+    # ── Network Firewall ──────────────────────────────────────────────────────
+    _check_pause()
+    log("[aws] Checking Network Firewall...")
+    _nfw_resp = _aws_run(["network-firewall", "list-firewalls"], "networkfirewall_firewalls.json") or {}
+    _nfw_firewalls = _nfw_resp.get("Firewalls") or []
+    if not _nfw_firewalls:
+        if "network-firewall" not in _denied_services:
+            log("[aws] No Network Firewalls deployed (MEDIUM)")
+            finding(title="Network Firewall: No firewalls deployed",
+                     severity="MEDIUM",
+                     description="No AWS Network Firewalls are deployed. Network traffic inspection and filtering is absent.",
+                     data={"catalogue_id": "FORGE-AWS-430",
+                           "remediation": "Deploy AWS Network Firewall for VPC traffic inspection."},
+                     output_file=str(out_dir / "networkfirewall_firewalls.json"))
+    else:
+        log(f"[aws] Network Firewalls: {len(_nfw_firewalls)}")
+
 
     # ── Final intelligence refresh ──────────────────────────────────────────
     _check_pause()
