@@ -248,6 +248,13 @@ def _check_console_body_errors(body):
         raise RuntimeError("AWS Console login failed — check URL, username and password")
 
 
+def _url_on_console(url: str) -> bool:
+    """True when URL hostname is *.console.aws.amazon.com — not just in query params."""
+    from urllib.parse import urlparse
+    host = (urlparse(url).hostname or "").lower()
+    return host == "console.aws.amazon.com" or host.endswith(".console.aws.amazon.com")
+
+
 def _aws_console_login_browser(console_url, account, username, password):
     """Playwright headless Chromium fallback for Console login when the
     lightweight requests approach is blocked (403)."""
@@ -310,10 +317,12 @@ def _aws_console_login_browser(console_url, account, username, password):
                 pass_input.fill(password)
 
             page.locator("#signin_button, button[type='submit']").first.click()
+
+            status("aws-console", "AWS Console Login — waiting for OAuth redirect", "running")
             try:
-                page.wait_for_url("**/console.aws.amazon.com/**", timeout=30000)
+                page.wait_for_url(_url_on_console, timeout=60000)
             except PwTimeout:
-                page.wait_for_load_state("networkidle", timeout=10000)
+                page.wait_for_load_state("networkidle", timeout=15000)
         except PwTimeout:
             pass
         except RuntimeError:
@@ -323,7 +332,9 @@ def _aws_console_login_browser(console_url, account, username, password):
 
         body = page.content().lower()
         current_url = page.url.lower()
+        on_console = _url_on_console(page.url)
         log(f"[aws-console] Post-login URL: {page.url}")
+        log(f"[aws-console] On console domain: {on_console}")
 
         if "newpasswordrequired" in body or "change_password" in body or "new-password" in body or "/updateaccount" in current_url:
             raise RuntimeError(
@@ -343,37 +354,69 @@ def _aws_console_login_browser(console_url, account, username, password):
 
         try:
             page.goto("https://us-east-1.console.aws.amazon.com/iam/home#/users",
-                       wait_until="domcontentloaded", timeout=30000)
+                       wait_until="commit", timeout=30000)
+            page.wait_for_url(
+                lambda u: _url_on_console(u) and "/iam" in u.split("?")[0],
+                timeout=60000,
+            )
             page.wait_for_load_state("networkidle", timeout=15000)
         except PwTimeout:
             pass
         except Exception as exc:
             log(f"[aws-console] IAM navigation warning: {exc}")
 
+        iam_on_console = _url_on_console(page.url)
         log(f"[aws-console] IAM page URL: {page.url}")
+        log(f"[aws-console] IAM on console domain: {iam_on_console}")
         create_payload = json.dumps({"UserName": username})
 
-        try:
-            resp = page.evaluate("""async ([payload]) => {
-                const r = await fetch(window.location.origin + '/iam/api', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/x-amz-json-1.1',
-                        'X-Amz-Target': 'AWSIdentityManagementService.CreateAccessKey'
-                    },
-                    body: payload,
-                    credentials: 'include'
-                });
-                return {status: r.status, body: await r.text()};
-            }""", [create_payload])
+        key_data = None
 
-            key_data = json.loads(resp["body"])
-        except Exception as exc:
-            raise RuntimeError(
-                f"Failed to create access key via Console browser session: {exc}\n"
-                f"  Page was on: {page.url}\n"
-                "  -> Create access keys manually: Console > IAM > Users > Security credentials > Create access key"
-            )
+        if iam_on_console:
+            try:
+                resp = page.evaluate("""async ([payload]) => {
+                    const r = await fetch(window.location.origin + '/iam/api', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/x-amz-json-1.1',
+                            'X-Amz-Target': 'AWSIdentityManagementService.CreateAccessKey'
+                        },
+                        body: payload,
+                        credentials: 'include'
+                    });
+                    return {status: r.status, body: await r.text()};
+                }""", [create_payload])
+                key_data = json.loads(resp["body"])
+            except Exception as exc:
+                log(f"[aws-console] In-page IAM fetch failed: {exc}")
+
+        if key_data is None:
+            log("[aws-console] Trying IAM API via extracted cookies (requests fallback)")
+            import requests as _rq
+            jar = _rq.cookies.RequestsCookieJar()
+            for c in ctx.cookies():
+                jar.set(c["name"], c["value"], domain=c.get("domain", ""),
+                        path=c.get("path", "/"))
+            try:
+                r = _rq.post(
+                    "https://us-east-1.console.aws.amazon.com/iam/api",
+                    data=create_payload,
+                    headers={
+                        "Content-Type": "application/x-amz-json-1.1",
+                        "X-Amz-Target": "AWSIdentityManagementService.CreateAccessKey",
+                    },
+                    cookies=jar,
+                    timeout=30,
+                    verify=True,
+                )
+                log(f"[aws-console] Cookie-fallback IAM status: {r.status_code}")
+                key_data = r.json()
+            except Exception as exc2:
+                raise RuntimeError(
+                    f"Failed to create access key via Console browser session: {exc2}\n"
+                    f"  Page was on: {page.url}\n"
+                    "  -> Create access keys manually: Console > IAM > Users > Security credentials > Create access key"
+                )
 
         return key_data
     finally:
@@ -511,7 +554,7 @@ def err(msg: str) -> None:
 
 
 def status(phase: str, label: str, state: str, step: str = "") -> None:
-    rec = {"phase": phase, "label": label, "state": state, "step": step}
+    rec = {"phase": phase, "label": label, "status": state, "step": step}
     _tok("__CRUCIBLE_STATUS__", json.dumps(rec))
 
 
