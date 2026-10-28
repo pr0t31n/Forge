@@ -255,6 +255,32 @@ def _url_on_console(url: str) -> bool:
     return host == "console.aws.amazon.com" or host.endswith(".console.aws.amazon.com")
 
 
+def _poll_for_console(page, timeout_s: int = 90) -> bool:
+    """Poll page.url every 2s until we land on *.console.aws.amazon.com."""
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        if _url_on_console(page.url):
+            return True
+        try:
+            page.wait_for_timeout(2000)
+        except Exception:
+            break
+    return False
+
+
+def _kick_oauth_redirect(page) -> None:
+    """If the OAuth page has an auto-submit form, submit it manually."""
+    try:
+        page.evaluate("""() => {
+            const forms = document.querySelectorAll('form');
+            for (const f of forms) {
+                if (f.method && f.action) { f.submit(); return; }
+            }
+        }""")
+    except Exception:
+        pass
+
+
 def _aws_console_login_browser(console_url, account, username, password):
     """Playwright headless Chromium fallback for Console login when the
     lightweight requests approach is blocked (403)."""
@@ -283,7 +309,10 @@ def _aws_console_login_browser(console_url, account, username, password):
         )
 
     try:
-        browser = pw.chromium.launch(headless=True)
+        browser = pw.chromium.launch(
+            headless=True,
+            args=["--disable-blink-features=AutomationControlled"],
+        )
         ctx = browser.new_context(
             user_agent=(
                 "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -292,6 +321,11 @@ def _aws_console_login_browser(console_url, account, username, password):
             viewport={"width": 1280, "height": 720},
             locale="en-US",
         )
+        ctx.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+            Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
+            window.chrome = {runtime: {}, loadTimes: function(){}, csi: function(){}};
+        """)
         page = ctx.new_page()
 
         status("aws-console", "AWS Console Login — navigating to sign-in", "running")
@@ -318,11 +352,11 @@ def _aws_console_login_browser(console_url, account, username, password):
 
             page.locator("#signin_button, button[type='submit']").first.click()
 
-            status("aws-console", "AWS Console Login — waiting for OAuth redirect", "running")
+            status("aws-console", "AWS Console Login — waiting for redirect", "running")
             try:
-                page.wait_for_url(_url_on_console, timeout=60000)
+                page.wait_for_load_state("load", timeout=30000)
             except PwTimeout:
-                page.wait_for_load_state("networkidle", timeout=15000)
+                pass
         except PwTimeout:
             pass
         except RuntimeError:
@@ -332,9 +366,6 @@ def _aws_console_login_browser(console_url, account, username, password):
 
         body = page.content().lower()
         current_url = page.url.lower()
-        on_console = _url_on_console(page.url)
-        log(f"[aws-console] Post-login URL: {page.url}")
-        log(f"[aws-console] On console domain: {on_console}")
 
         if "newpasswordrequired" in body or "change_password" in body or "new-password" in body or "/updateaccount" in current_url:
             raise RuntimeError(
@@ -349,74 +380,115 @@ def _aws_console_login_browser(console_url, account, username, password):
         if "authentication_failed" in body or "iam_user_authentication_failure" in body:
             raise RuntimeError("AWS Console login failed — check URL, username and password")
 
-        log("[aws-console] Browser login successful — navigating to IAM console")
+        on_console = _url_on_console(page.url)
+        if not on_console:
+            log(f"[aws-console] On OAuth page: {page.url[:120]}...")
+            _kick_oauth_redirect(page)
+            status("aws-console", "AWS Console Login — completing OAuth", "running")
+            on_console = _poll_for_console(page, timeout_s=90)
+
+        log(f"[aws-console] Post-login URL: {page.url}")
+        log(f"[aws-console] On console domain: {on_console}")
+
+        if not on_console:
+            log("[aws-console] OAuth redirect did not complete — browser may be detected")
+
         status("aws-console", "AWS Console Login — creating temp key", "running")
-
-        try:
-            page.goto("https://us-east-1.console.aws.amazon.com/iam/home#/users",
-                       wait_until="commit", timeout=30000)
-            page.wait_for_url(
-                lambda u: _url_on_console(u) and "/iam" in u.split("?")[0],
-                timeout=60000,
-            )
-            page.wait_for_load_state("networkidle", timeout=15000)
-        except PwTimeout:
-            pass
-        except Exception as exc:
-            log(f"[aws-console] IAM navigation warning: {exc}")
-
-        iam_on_console = _url_on_console(page.url)
-        log(f"[aws-console] IAM page URL: {page.url}")
-        log(f"[aws-console] IAM on console domain: {iam_on_console}")
         create_payload = json.dumps({"UserName": username})
-
         key_data = None
 
-        if iam_on_console:
+        if on_console:
+            log("[aws-console] Navigating to IAM console")
             try:
-                resp = page.evaluate("""async ([payload]) => {
-                    const r = await fetch(window.location.origin + '/iam/api', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/x-amz-json-1.1',
-                            'X-Amz-Target': 'AWSIdentityManagementService.CreateAccessKey'
-                        },
-                        body: payload,
-                        credentials: 'include'
-                    });
-                    return {status: r.status, body: await r.text()};
-                }""", [create_payload])
-                key_data = json.loads(resp["body"])
+                page.goto("https://us-east-1.console.aws.amazon.com/iam/home#/users",
+                           wait_until="commit", timeout=30000)
+                _poll_for_console(page, timeout_s=60)
+                page.wait_for_load_state("networkidle", timeout=15000)
             except Exception as exc:
-                log(f"[aws-console] In-page IAM fetch failed: {exc}")
+                log(f"[aws-console] IAM navigation warning: {exc}")
+
+            log(f"[aws-console] IAM page URL: {page.url}")
+            if _url_on_console(page.url):
+                try:
+                    resp = page.evaluate("""async ([payload]) => {
+                        const r = await fetch(window.location.origin + '/iam/api', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/x-amz-json-1.1',
+                                'X-Amz-Target': 'AWSIdentityManagementService.CreateAccessKey'
+                            },
+                            body: payload,
+                            credentials: 'include'
+                        });
+                        return {status: r.status, body: await r.text()};
+                    }""", [create_payload])
+                    key_data = json.loads(resp["body"])
+                    log(f"[aws-console] In-page CreateAccessKey succeeded")
+                except Exception as exc:
+                    log(f"[aws-console] In-page IAM fetch failed: {exc}")
 
         if key_data is None:
-            log("[aws-console] Trying IAM API via extracted cookies (requests fallback)")
+            log("[aws-console] Trying cookie-based IAM API fallback")
             import requests as _rq
-            jar = _rq.cookies.RequestsCookieJar()
+            _sess = _rq.Session()
             for c in ctx.cookies():
-                jar.set(c["name"], c["value"], domain=c.get("domain", ""),
-                        path=c.get("path", "/"))
+                _sess.cookies.set(c["name"], c["value"],
+                                  domain=c.get("domain", ""),
+                                  path=c.get("path", "/"))
+            _iam_endpoints = [
+                "https://us-east-1.console.aws.amazon.com/iam/api",
+                "https://console.aws.amazon.com/iam/api",
+            ]
+            for ep in _iam_endpoints:
+                try:
+                    r = _sess.post(
+                        ep, data=create_payload,
+                        headers={
+                            "Content-Type": "application/x-amz-json-1.1",
+                            "X-Amz-Target": "AWSIdentityManagementService.CreateAccessKey",
+                        },
+                        timeout=30, verify=True,
+                    )
+                    log(f"[aws-console] Cookie fallback {ep}: HTTP {r.status_code}")
+                    if r.status_code == 200:
+                        key_data = r.json()
+                        break
+                except Exception as exc:
+                    log(f"[aws-console] Cookie fallback {ep}: {exc}")
+
+        if key_data is None:
+            log("[aws-console] Trying browser-context IAM API (navigate + fetch)")
             try:
-                r = _rq.post(
-                    "https://us-east-1.console.aws.amazon.com/iam/api",
-                    data=create_payload,
-                    headers={
-                        "Content-Type": "application/x-amz-json-1.1",
-                        "X-Amz-Target": "AWSIdentityManagementService.CreateAccessKey",
-                    },
-                    cookies=jar,
-                    timeout=30,
-                    verify=True,
-                )
-                log(f"[aws-console] Cookie-fallback IAM status: {r.status_code}")
-                key_data = r.json()
-            except Exception as exc2:
-                raise RuntimeError(
-                    f"Failed to create access key via Console browser session: {exc2}\n"
-                    f"  Page was on: {page.url}\n"
-                    "  -> Create access keys manually: Console > IAM > Users > Security credentials > Create access key"
-                )
+                page.goto("https://us-east-1.console.aws.amazon.com/iam/home",
+                           wait_until="commit", timeout=30000)
+                _poll_for_console(page, timeout_s=60)
+
+                if _url_on_console(page.url):
+                    page.wait_for_load_state("networkidle", timeout=15000)
+                    resp = page.evaluate("""async ([payload]) => {
+                        const r = await fetch(window.location.origin + '/iam/api', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/x-amz-json-1.1',
+                                'X-Amz-Target': 'AWSIdentityManagementService.CreateAccessKey'
+                            },
+                            body: payload,
+                            credentials: 'include'
+                        });
+                        return {status: r.status, body: await r.text()};
+                    }""", [create_payload])
+                    key_data = json.loads(resp["body"])
+                    log("[aws-console] Retry navigate+fetch succeeded")
+            except Exception as exc:
+                log(f"[aws-console] Retry navigate+fetch failed: {exc}")
+
+        if key_data is None:
+            raise RuntimeError(
+                "AWS OAuth redirect did not complete — the headless browser was likely detected.\n"
+                "  Page was on: " + page.url[:200] + "\n"
+                "  -> Create access keys manually: Console > IAM > Users > Security credentials > Create access key\n"
+                "  -> Then pass them via --aws-access-key-id and --aws-secret-key"
+            )
 
         return key_data
     finally:
