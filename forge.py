@@ -103,6 +103,15 @@ _pause = None
 
 _IAM_DENY_PATTERNS = ("not authorized to perform", "AccessDenied", "AccessDeniedException")
 
+_ACCESS_DENIED = "__ACCESS_DENIED__"
+
+def _is_access_denied(stderr_text: str) -> bool:
+    """Return True if stderr indicates an AWS AccessDenied / permission error."""
+    if not stderr_text:
+        return False
+    lower = stderr_text.lower()
+    return any(p.lower() in lower for p in _IAM_DENY_PATTERNS)
+
 
 def _check_iam_error(resp_data: dict) -> None:
     """Raise with specific guidance if an IAM API response is a permission denial."""
@@ -1222,10 +1231,293 @@ def audit_gcp(project_id: str, output_dir: Path) -> None:
 
 # ── AWS auditor ───────────────────────────────────────────────────────────────
 
+def _build_aws_intelligence(out_dir: Path, region: str, findings: list,
+                             cred_report: dict, denied_services: set,
+                             iam_users_raw: list) -> None:
+    """Build intelligence files for Crucible's cloud intelligence tabs."""
+    def _safe_load(name):
+        p = out_dir / name
+        if p.exists():
+            try:
+                return json.loads(p.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        return None
+
+    def _findings_for(service_prefix: str) -> list:
+        return [f for f in findings if (f.get("catalogue_id") or "").startswith(service_prefix)]
+
+    def _max_risk(flist: list) -> str:
+        order = {"CRITICAL": 5, "HIGH": 4, "MEDIUM": 3, "LOW": 2, "INFO": 1}
+        best = ""
+        for f in flist:
+            r = str(f.get("risk", "")).upper()
+            if order.get(r, 0) > order.get(best, 0):
+                best = r
+        return best or "OK"
+
+    def _risk_breakdown(flist: list) -> dict:
+        rc = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
+        for f in flist:
+            k = str(f.get("risk", "")).lower()
+            if k in rc:
+                rc[k] += 1
+        return rc
+
+    # ── cloud_inventory.json ─────────────────────────────────────────────────
+    inventory = []
+
+    # S3 buckets
+    s3_data = _safe_load("s3_buckets.json")
+    if s3_data and isinstance(s3_data, dict):
+        for b in s3_data.get("Buckets") or []:
+            name = b.get("Name", "")
+            bf = [f for f in findings if name in str(f.get("affected", ""))
+                  and "S3" in str(f.get("title", ""))]
+            inventory.append({
+                "service": "S3", "resource_type": "Bucket",
+                "resource_id": name, "name": name,
+                "region": "global", "status": "active",
+                "findings": len(bf), "risk": _max_risk(bf),
+            })
+
+    # EC2 instances
+    ec2_data = _safe_load("ec2_instances.json")
+    if ec2_data and isinstance(ec2_data, dict):
+        for res in ec2_data.get("Reservations") or []:
+            for inst in res.get("Instances") or []:
+                iid = inst.get("InstanceId", "")
+                name_tag = ""
+                for tag in inst.get("Tags") or []:
+                    if tag.get("Key") == "Name":
+                        name_tag = tag.get("Value", "")
+                label = name_tag or iid
+                state = (inst.get("State") or {}).get("Name", "unknown")
+                bf = [f for f in findings if iid in str(f.get("title", ""))
+                      or iid in str(f.get("affected", ""))]
+                inventory.append({
+                    "service": "EC2", "resource_type": "Instance",
+                    "resource_id": iid, "name": label,
+                    "region": region, "status": state,
+                    "findings": len(bf), "risk": _max_risk(bf),
+                })
+
+    # EBS volumes
+    ebs_data = _safe_load("ec2_volumes.json")
+    if ebs_data and isinstance(ebs_data, dict):
+        for vol in ebs_data.get("Volumes") or []:
+            vid = vol.get("VolumeId", "")
+            bf = [f for f in findings if vid in str(f.get("affected", ""))]
+            inventory.append({
+                "service": "EC2", "resource_type": "EBS Volume",
+                "resource_id": vid, "name": vid,
+                "region": region, "status": vol.get("State", "unknown"),
+                "findings": len(bf), "risk": _max_risk(bf),
+            })
+
+    # RDS instances
+    rds_data = _safe_load("rds_instances.json")
+    if rds_data and isinstance(rds_data, dict):
+        for db in rds_data.get("DBInstances") or []:
+            db_id = db.get("DBInstanceIdentifier", "")
+            bf = [f for f in findings if db_id in str(f.get("affected", ""))]
+            inventory.append({
+                "service": "RDS", "resource_type": f"Instance ({db.get('Engine', '')})",
+                "resource_id": db_id, "name": db_id,
+                "region": region, "status": db.get("DBInstanceStatus", "unknown"),
+                "findings": len(bf), "risk": _max_risk(bf),
+            })
+
+    # Lambda functions
+    lam_data = _safe_load("lambda_functions.json")
+    if lam_data and isinstance(lam_data, dict):
+        for fn in lam_data.get("Functions") or []:
+            fn_name = fn.get("FunctionName", "")
+            bf = [f for f in findings if fn_name in str(f.get("affected", ""))]
+            inventory.append({
+                "service": "Lambda", "resource_type": f"Function ({fn.get('Runtime', '')})",
+                "resource_id": fn_name, "name": fn_name,
+                "region": region, "status": "active",
+                "findings": len(bf), "risk": _max_risk(bf),
+            })
+
+    # KMS keys
+    kms_data = _safe_load("kms_keys.json")
+    if kms_data and isinstance(kms_data, dict):
+        for k in kms_data.get("Keys") or []:
+            kid = k.get("KeyId", "")
+            bf = [f for f in findings if kid[:8] in str(f.get("affected", ""))]
+            inventory.append({
+                "service": "KMS", "resource_type": "Key",
+                "resource_id": kid[:8] + "...", "name": kid[:8] + "...",
+                "region": region, "status": "active",
+                "findings": len(bf), "risk": _max_risk(bf),
+            })
+
+    # DynamoDB tables
+    ddb_data = _safe_load("dynamodb_tables.json")
+    if ddb_data and isinstance(ddb_data, dict):
+        for tname in ddb_data.get("TableNames") or []:
+            bf = [f for f in findings if tname in str(f.get("affected", ""))]
+            inventory.append({
+                "service": "DynamoDB", "resource_type": "Table",
+                "resource_id": tname, "name": tname,
+                "region": region, "status": "active",
+                "findings": len(bf), "risk": _max_risk(bf),
+            })
+
+    try:
+        (out_dir.parent / "cloud_inventory.json").write_text(
+            json.dumps(inventory, indent=2), encoding="utf-8")
+        log(f"[aws] Wrote cloud_inventory.json ({len(inventory)} resource(s))")
+    except Exception as exc:
+        err(f"[aws] cloud_inventory.json write failed: {exc}")
+
+    # ── iam_matrix.json ──────────────────────────────────────────────────────
+    iam_matrix = []
+    for user in iam_users_raw:
+        uname = user.get("UserName", "")
+        cr = cred_report.get(uname, {})
+        uf = [f for f in findings if uname in str(f.get("affected", ""))
+              and "IAM" in str(f.get("title", ""))]
+        # load policies from evidence
+        pol_data = _safe_load(f"iam_{uname}_policies.json")
+        pols = []
+        if pol_data and isinstance(pol_data, dict):
+            pols = [p.get("PolicyName", p.get("PolicyArn", "").rsplit("/", 1)[-1])
+                    for p in pol_data.get("AttachedPolicies") or []]
+        keys_data = _safe_load(f"iam_{uname}_keys.json")
+        n_keys = len((keys_data or {}).get("AccessKeyMetadata") or []) if isinstance(keys_data, dict) else 0
+        active_keys = sum(1 for k in ((keys_data or {}).get("AccessKeyMetadata") or [])
+                         if k.get("Status") == "Active") if isinstance(keys_data, dict) else 0
+        iam_matrix.append({
+            "user": uname,
+            "arn": user.get("Arn", ""),
+            "password_enabled": cr.get("password_enabled", "N/A"),
+            "mfa_active": cr.get("mfa_active", "N/A"),
+            "access_keys": n_keys,
+            "active_keys": active_keys,
+            "last_login": cr.get("password_last_used", "N/A"),
+            "policies": ", ".join(pols) if pols else "none",
+            "findings": len(uf),
+            "risk": _max_risk(uf) if uf else "OK",
+        })
+    try:
+        (out_dir.parent / "iam_matrix.json").write_text(
+            json.dumps(iam_matrix, indent=2), encoding="utf-8")
+        log(f"[aws] Wrote iam_matrix.json ({len(iam_matrix)} user(s))")
+    except Exception as exc:
+        err(f"[aws] iam_matrix.json write failed: {exc}")
+
+    # ── service_dashboard.json ───────────────────────────────────────────────
+    svc_map = {
+        "S3": ("FORGE-AWS-00", "s3api"),
+        "EC2": ("FORGE-AWS-01", "ec2"),
+        "IAM": ("FORGE-AWS-02", "iam"),
+        "RDS": ("FORGE-AWS-03", "rds"),
+        "CloudTrail": ("FORGE-AWS-04", "cloudtrail"),
+        "KMS": ("FORGE-AWS-05", "kms"),
+        "Lambda": ("FORGE-AWS-06", "lambda"),
+        "VPC": ("FORGE-AWS-07", "ec2"),
+        "EFS": ("FORGE-AWS-08", "efs"),
+        "SNS": ("FORGE-AWS-09", "sns"),
+        "SQS": ("FORGE-AWS-09", "sqs"),
+        "GuardDuty": ("FORGE-AWS-100", "guardduty"),
+        "Security Hub": ("FORGE-AWS-101", "securityhub"),
+        "ACM": ("FORGE-AWS-11", "acm"),
+        "CloudWatch Logs": ("FORGE-AWS-12", "logs"),
+        "ECS": ("FORGE-AWS-13", "ecs"),
+        "OpenSearch": ("FORGE-AWS-14", "opensearch"),
+        "Secrets Manager": ("FORGE-AWS-15", "secretsmanager"),
+        "CloudFront": ("FORGE-AWS-16", "cloudfront"),
+        "DynamoDB": ("FORGE-AWS-17", "dynamodb"),
+    }
+    dashboard = []
+    for svc_name, (prefix, cli_svc) in svc_map.items():
+        sf = [f for f in findings
+              if str(f.get("catalogue_id", "")).startswith(prefix)]
+        rb = _risk_breakdown(sf)
+        # count resources from inventory
+        n_res = sum(1 for r in inventory if r.get("service") == svc_name)
+        access = "Access Denied" if cli_svc in denied_services else "Allowed"
+        if sf:
+            st = "Issues Found"
+        elif cli_svc in denied_services:
+            st = "Access Denied"
+        elif n_res == 0 and not sf:
+            st = "No Resources" if access == "Allowed" else "Access Denied"
+        else:
+            st = "OK"
+        dashboard.append({
+            "service": svc_name, "resources": n_res,
+            "findings": len(sf), "status": st, "access": access,
+            **rb,
+        })
+    try:
+        (out_dir.parent / "service_dashboard.json").write_text(
+            json.dumps(dashboard, indent=2), encoding="utf-8")
+        log(f"[aws] Wrote service_dashboard.json ({len(dashboard)} service(s))")
+    except Exception as exc:
+        err(f"[aws] service_dashboard.json write failed: {exc}")
+
+
+def _detect_aws_region(aws: str, profile: str) -> str:
+    """Auto-detect AWS region from profile config or STS caller identity."""
+    # 1) Try aws configure get region
+    cmd = [aws, "configure", "get", "region"]
+    if profile:
+        cmd += ["--profile", profile]
+    try:
+        cp = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        val = (cp.stdout or "").strip()
+        if val and cp.returncode == 0:
+            log(f"[aws] Auto-detected region from profile config: {val}")
+            return val
+    except Exception:
+        pass
+
+    # 2) Try STS get-caller-identity — extract region from ARN partition hint
+    #    or fall back to the default region in the response metadata
+    cmd = [aws, "sts", "get-caller-identity", "--output", "json"]
+    if profile:
+        cmd += ["--profile", profile]
+    try:
+        cp = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        if cp.returncode == 0 and cp.stdout:
+            data = json.loads(cp.stdout)
+            arn = data.get("Arn", "")
+            # ARN format: arn:aws:iam::ACCOUNT:...
+            # The partition (aws, aws-cn, aws-us-gov) hints at region family
+            if ":aws-cn:" in arn:
+                log("[aws] Auto-detected region from ARN partition: cn-north-1")
+                return "cn-north-1"
+            elif ":aws-us-gov:" in arn:
+                log("[aws] Auto-detected region from ARN partition: us-gov-west-1")
+                return "us-gov-west-1"
+    except Exception:
+        pass
+
+    # 3) Try EC2 IMDS (works on EC2 instances)
+    try:
+        import urllib.request
+        req = urllib.request.Request(
+            "http://169.254.169.254/latest/meta-data/placement/region",
+            headers={"X-aws-ec2-metadata-token-ttl-seconds": "5"})
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            val = resp.read().decode().strip()
+            if val:
+                log(f"[aws] Auto-detected region from EC2 IMDS: {val}")
+                return val
+    except Exception:
+        pass
+
+    # 4) Fall back to us-east-1 (broadest service coverage)
+    log("[aws] Could not auto-detect region — defaulting to us-east-1")
+    return "us-east-1"
+
+
 def audit_aws(profile: str, region: str, output_dir: Path) -> None:
     _check_pause()
-    log(f"[aws] Starting AWS audit — profile={profile or 'default'}, region={region or 'default'}")
-    status("aws", "AWS Account Audit", "running")
     aws = shutil.which("aws")
     if not aws:
         err("aws CLI not installed — skipping AWS audit")
@@ -1233,10 +1525,22 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
         return
     log(f"[aws] aws CLI found at {aws}")
 
+    if not region:
+        region = _detect_aws_region(aws, profile)
+
+    log(f"[aws] Starting AWS audit — profile={profile or 'default'}, region={region}")
+    status("aws", "AWS Account Audit", "running")
+
     out_dir = output_dir / "aws"
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    _denied_services: set = set()
+
     def _aws_run(args: list, out_name: str, use_region: bool = True) -> dict | list | None:
+        """Run an AWS CLI command.  Returns parsed JSON, or None on failure.
+        When the API returns AccessDenied, the service name (args[0]) is added
+        to ``_denied_services`` and None is returned — callers treat it the
+        same as empty data but the denial is tracked for intelligence/reporting."""
         out_file = out_dir / out_name
         cmd = [aws] + args + ["--output", "json"]
         if profile:
@@ -1253,10 +1557,17 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
             else:
                 cp = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
             raw = cp.stdout or ""
-            if not raw.strip() and (cp.stderr or "").strip():
-                out_file.write_text(cp.stderr, encoding="utf-8")
+            stderr = cp.stderr or ""
+            if not raw.strip() and stderr.strip():
+                out_file.write_text(stderr, encoding="utf-8")
             else:
                 out_file.write_text(raw, encoding="utf-8")
+            if _is_access_denied(stderr):
+                svc = args[0] if args else "unknown"
+                _denied_services.add(svc)
+                log(f"[aws] AccessDenied on: aws {' '.join(args[:2])} — "
+                    f"insufficient permissions for {svc}")
+                return None
             try:
                 return json.loads(raw) if raw.strip() else None
             except json.JSONDecodeError:
@@ -1507,40 +1818,137 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
     users_resp = _aws_run(["iam", "list-users"], "iam_users.json", use_region=False) or {}
     iam_users = users_resp.get("Users") or []
     log(f"[aws] Found {len(iam_users)} IAM user(s)")
+
+    # Generate + parse credential report FIRST — used by per-user MFA check
+    _check_pause()
+    log("[aws] Generating credential report...")
+    _aws_run(["iam", "generate-credential-report"], "iam_cred_gen.json", use_region=False)
+    time.sleep(3)
+    log("[aws] Retrieving credential report...")
+    cred_data = _aws_run(["iam", "get-credential-report"], "iam_cred_report.json", use_region=False) or {}
+    _cred_report: dict = {}
+    if cred_data.get("Content"):
+        log("[aws] Parsing credential report...")
+        try:
+            csv_text = base64.b64decode(cred_data["Content"]).decode("utf-8")
+            lines = csv_text.strip().split("\n")
+            if lines:
+                headers = [h.strip() for h in lines[0].split(",")]
+                for line in lines[1:]:
+                    cols = line.split(",")
+                    if len(cols) >= len(headers):
+                        row = dict(zip(headers, cols))
+                        _cred_report[row.get("user", "")] = row
+        except Exception:
+            pass
+    else:
+        log("[aws] Credential report not available")
+
+    # Root account checks from credential report
+    root_row = _cred_report.get("<root_account>", {})
+    if root_row:
+        if root_row.get("mfa_active", "").lower() != "true":
+            log("[aws] Root account does NOT have MFA enabled (CRITICAL)")
+            finding(title="Root account without MFA",
+                     severity="CRITICAL",
+                     description="The AWS root account does not have MFA enabled. The root account "
+                                 "has unrestricted access to all AWS services and resources — "
+                                 "without MFA, a compromised password grants full account takeover.",
+                     data={"catalogue_id": "FORGE-AWS-026", "affected": "root",
+                           "remediation": "Enable MFA on the root account: AWS Console → My Security Credentials → MFA → Activate MFA."},
+                     output_file=str(out_dir / "iam_cred_report.json"))
+        else:
+            log("[aws] Root account — MFA enabled")
+
+        if root_row.get("access_key_1_active", "").lower() == "true":
+            log("[aws] Root account has active access keys (CRITICAL)")
+            finding(title="Root account has active access keys",
+                     severity="CRITICAL",
+                     description="The AWS root account has access keys configured. Root keys should never exist.",
+                     data={"catalogue_id": "FORGE-AWS-023", "affected": "root",
+                           "remediation": "Delete root access keys and use IAM users/roles instead."},
+                     output_file=str(out_dir / "iam_cred_report.json"))
+        else:
+            log("[aws] Root account — no active access keys")
+    elif _cred_report:
+        log("[aws] Root account row not found in credential report")
+
+    # Overly-permissive managed policies to flag
+    _OVERPERM_POLICIES = {
+        "AdministratorAccess", "IAMFullAccess", "PowerUserAccess",
+        "AmazonS3FullAccess", "AmazonEC2FullAccess", "AmazonRDSFullAccess",
+        "AmazonDynamoDBFullAccess", "AmazonVPCFullAccess",
+        "AWSLambda_FullAccess", "AmazonSQSFullAccess", "AmazonSNSFullAccess",
+    }
+
     _check_pause()
     for user in iam_users:
         _check_pause()
         uname = user.get("UserName", "")
         log(f"[aws] Checking IAM user {uname}...")
 
+        # MFA check — consult credential report for password_enabled
         log(f"[aws] {uname} — checking MFA devices...")
         mfa_resp = _aws_run(["iam", "list-mfa-devices", "--user-name", uname],
                               f"iam_{uname}_mfa.json", use_region=False) or {}
         mfa_devices = mfa_resp.get("MFADevices") or []
         if not mfa_devices:
-            log(f"[aws] {uname} — no MFA configured (HIGH)")
-            finding(title=f"IAM user without MFA: {uname}",
-                     severity="HIGH",
-                     description=f"IAM user {uname} has no MFA device configured.",
-                     data={"catalogue_id": "FORGE-AWS-020", "affected": uname,
-                           "remediation": "Enable virtual or hardware MFA for this user."},
-                     output_file=str(out_dir / f"iam_{uname}_mfa.json"))
+            cr_row = _cred_report.get(uname, {})
+            has_password = cr_row.get("password_enabled", "").lower() == "true"
+            has_active_key = cr_row.get("access_key_1_active", "").lower() == "true"
+            if has_password:
+                log(f"[aws] {uname} — console user without MFA (HIGH)")
+                finding(title=f"IAM user without MFA: {uname}",
+                         severity="HIGH",
+                         description=f"IAM user {uname} has console login enabled but no MFA device configured.",
+                         data={"catalogue_id": "FORGE-AWS-020", "affected": uname,
+                               "remediation": "Enable virtual or hardware MFA for this user."},
+                         output_file=str(out_dir / f"iam_{uname}_mfa.json"))
+            elif has_active_key:
+                log(f"[aws] {uname} — programmatic-only user without MFA (INFO)")
+                finding(title=f"Programmatic IAM user without MFA: {uname}",
+                         severity="INFO",
+                         description=f"IAM user {uname} has no console password and only programmatic access keys. "
+                                     "MFA is not applicable for API-only access but the user should be reviewed.",
+                         data={"catalogue_id": "FORGE-AWS-020", "affected": uname,
+                               "remediation": "Verify this user is intended for programmatic-only access."},
+                         output_file=str(out_dir / f"iam_{uname}_mfa.json"))
+            else:
+                log(f"[aws] {uname} — no password, no active keys, no MFA (orphaned user)")
+                finding(title=f"Orphaned IAM user: {uname}",
+                         severity="MEDIUM",
+                         description=f"IAM user {uname} has no console password, no active access keys, and no MFA. "
+                                     "This appears to be an unused/orphaned account.",
+                         data={"catalogue_id": "FORGE-AWS-027", "affected": uname,
+                               "remediation": "Delete the unused IAM user or activate credentials if still needed."},
+                         output_file=str(out_dir / f"iam_{uname}_mfa.json"))
         else:
             log(f"[aws] {uname} — MFA enabled ({len(mfa_devices)} device(s))")
 
+        # Attached policy checks (AdministratorAccess + other overly-permissive)
         log(f"[aws] {uname} — checking attached policies...")
         policies_resp = _aws_run(["iam", "list-attached-user-policies", "--user-name", uname],
                                    f"iam_{uname}_policies.json", use_region=False) or {}
         attached = policies_resp.get("AttachedPolicies") or []
         log(f"[aws] {uname} — {len(attached)} attached polic(ies)")
         for pol in attached:
-            if pol.get("PolicyArn", "").endswith("/AdministratorAccess"):
+            pol_name = pol.get("PolicyArn", "").rsplit("/", 1)[-1]
+            if pol_name == "AdministratorAccess":
                 log(f"[aws] {uname} — has AdministratorAccess directly attached (CRITICAL)")
                 finding(title=f"IAM user has AdministratorAccess: {uname}",
                          severity="CRITICAL",
                          description=f"User {uname} has the AdministratorAccess managed policy directly attached.",
                          data={"catalogue_id": "FORGE-AWS-021", "affected": uname,
                                "remediation": "Remove direct AdministratorAccess; use role assumption with least-privilege."},
+                         output_file=str(out_dir / f"iam_{uname}_policies.json"))
+            elif pol_name in _OVERPERM_POLICIES:
+                log(f"[aws] {uname} — has overly-permissive policy {pol_name} directly attached (HIGH)")
+                finding(title=f"IAM user has overly-permissive policy: {uname} ({pol_name})",
+                         severity="HIGH",
+                         description=f"User {uname} has the {pol_name} managed policy directly attached. "
+                                     "Full-access policies violate least-privilege and increase blast radius.",
+                         data={"catalogue_id": "FORGE-AWS-028", "affected": uname,
+                               "remediation": f"Replace {pol_name} with a scoped policy granting only the permissions this user needs."},
                          output_file=str(out_dir / f"iam_{uname}_policies.json"))
 
         log(f"[aws] {uname} — checking access keys...")
@@ -1565,33 +1973,6 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
                 except Exception:
                     pass
     log(f"[aws] IAM user audit complete — checked {len(iam_users)} user(s)")
-
-    _check_pause()
-    log("[aws] Generating credential report...")
-    cred_report = _aws_run(["iam", "generate-credential-report"], "iam_cred_gen.json", use_region=False)
-    log("[aws] Retrieving credential report...")
-    cred_data = _aws_run(["iam", "get-credential-report"], "iam_cred_report.json", use_region=False) or {}
-    if cred_data.get("Content"):
-        log("[aws] Parsing credential report for root account keys...")
-        try:
-            csv_text = base64.b64decode(cred_data["Content"]).decode("utf-8")
-            for line in csv_text.strip().split("\n")[1:]:
-                cols = line.split(",")
-                if len(cols) > 1 and cols[0] == "<root_account>":
-                    if len(cols) > 8 and cols[8].lower() == "true":
-                        log("[aws] Root account has active access keys (CRITICAL)")
-                        finding(title="Root account has active access keys",
-                                 severity="CRITICAL",
-                                 description="The AWS root account has access keys configured. Root keys should never exist.",
-                                 data={"catalogue_id": "FORGE-AWS-023", "affected": "root",
-                                       "remediation": "Delete root access keys and use IAM users/roles instead."},
-                                 output_file=str(out_dir / "iam_cred_report.json"))
-                    else:
-                        log("[aws] Root account — no active access keys")
-        except Exception:
-            pass
-    else:
-        log("[aws] Credential report not available")
 
     # ── RDS ───────────────────────────────────────────────────────────────────
     _check_pause()
@@ -1673,13 +2054,16 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
     trails = trails_resp.get("trailList") or []
     log(f"[aws] Found {len(trails)} CloudTrail trail(s)")
     if not trails:
-        log("[aws] No CloudTrail trails configured (HIGH)")
-        finding(title="No CloudTrail trails configured",
-                 severity="HIGH",
-                 description="No CloudTrail trails exist in this region/account. API activity is not logged.",
-                 data={"catalogue_id": "FORGE-AWS-040",
-                       "remediation": "Create a multi-region trail logging to a dedicated S3 bucket."},
-                 output_file=str(out_dir / "cloudtrail_trails.json"))
+        if "cloudtrail" in _denied_services:
+            log("[aws] CloudTrail — AccessDenied (cannot determine trail status)")
+        else:
+            log("[aws] No CloudTrail trails configured (HIGH)")
+            finding(title="No CloudTrail trails configured",
+                     severity="HIGH",
+                     description="No CloudTrail trails exist in this region/account. API activity is not logged.",
+                     data={"catalogue_id": "FORGE-AWS-040",
+                           "remediation": "Create a multi-region trail logging to a dedicated S3 bucket."},
+                     output_file=str(out_dir / "cloudtrail_trails.json"))
     else:
         _check_pause()
         for trail in trails:
@@ -1933,13 +2317,16 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
         else:
             log("[aws] Password policy meets complexity requirements")
     else:
-        log("[aws] No account password policy configured (MEDIUM)")
-        finding(title="IAM account password policy not configured",
-                 severity="MEDIUM",
-                 description="No custom IAM password policy is configured — AWS defaults apply (6 char minimum, no complexity).",
-                 data={"catalogue_id": "FORGE-AWS-024", "affected": "account",
-                       "remediation": "aws iam update-account-password-policy with strong complexity settings."},
-                 output_file=str(out_dir / "iam_password_policy.json"))
+        if "iam" in _denied_services:
+            log("[aws] Password policy — AccessDenied (cannot determine status)")
+        else:
+            log("[aws] No account password policy configured (MEDIUM)")
+            finding(title="IAM account password policy not configured",
+                     severity="MEDIUM",
+                     description="No custom IAM password policy is configured — AWS defaults apply (6 char minimum, no complexity).",
+                     data={"catalogue_id": "FORGE-AWS-024", "affected": "account",
+                           "remediation": "aws iam update-account-password-policy with strong complexity settings."},
+                     output_file=str(out_dir / "iam_password_policy.json"))
 
     # FORGE-AWS-025: expired server certificates
     log("[aws] Checking IAM server certificates...")
@@ -2120,13 +2507,16 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
     gd_resp = _aws_run(["guardduty", "list-detectors"], "guardduty_detectors.json") or {}
     gd_detectors = gd_resp.get("DetectorIds") or []
     if not gd_detectors:
-        log("[aws] GuardDuty not enabled — no detectors found (MEDIUM)")
-        finding(title="GuardDuty not enabled",
-                 severity="MEDIUM",
-                 description="Amazon GuardDuty is not enabled in this region — threat detection for the account is absent.",
-                 data={"catalogue_id": "FORGE-AWS-100",
-                       "remediation": "aws guardduty create-detector --enable"},
-                 output_file=str(out_dir / "guardduty_detectors.json"))
+        if "guardduty" in _denied_services:
+            log("[aws] GuardDuty — AccessDenied (cannot determine status)")
+        else:
+            log("[aws] GuardDuty not enabled — no detectors found (MEDIUM)")
+            finding(title="GuardDuty not enabled",
+                     severity="MEDIUM",
+                     description="Amazon GuardDuty is not enabled in this region — threat detection for the account is absent.",
+                     data={"catalogue_id": "FORGE-AWS-100",
+                           "remediation": "aws guardduty create-detector --enable"},
+                     output_file=str(out_dir / "guardduty_detectors.json"))
     else:
         log(f"[aws] GuardDuty enabled — {len(gd_detectors)} detector(s)")
     log("[aws] GuardDuty audit complete")
@@ -2138,13 +2528,16 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
     status("aws", "Security Hub audit", "running")
     sh_resp = _aws_run(["securityhub", "describe-hub"], "securityhub_hub.json")
     if not sh_resp or not sh_resp.get("HubArn"):
-        log("[aws] Security Hub not enabled (MEDIUM)")
-        finding(title="Security Hub not enabled",
-                 severity="MEDIUM",
-                 description="AWS Security Hub is not enabled in this region — centralized security posture management is absent.",
-                 data={"catalogue_id": "FORGE-AWS-101",
-                       "remediation": "aws securityhub enable-security-hub"},
-                 output_file=str(out_dir / "securityhub_hub.json"))
+        if "securityhub" in _denied_services:
+            log("[aws] Security Hub — AccessDenied (cannot determine status)")
+        else:
+            log("[aws] Security Hub not enabled (MEDIUM)")
+            finding(title="Security Hub not enabled",
+                     severity="MEDIUM",
+                     description="AWS Security Hub is not enabled in this region — centralized security posture management is absent.",
+                     data={"catalogue_id": "FORGE-AWS-101",
+                           "remediation": "aws securityhub enable-security-hub"},
+                     output_file=str(out_dir / "securityhub_hub.json"))
     else:
         log(f"[aws] Security Hub enabled — {sh_resp.get('HubArn', '')}")
     log("[aws] Security Hub audit complete")
@@ -2423,7 +2816,31 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
                          output_file=str(out_dir / f"ecs_{td_name}_detail.json"))
     log(f"[aws] ECS audit complete — checked {len(ecs_arns)} task definition(s)")
 
-    log(f"[aws] AWS audit complete — profile={profile or 'default'}, region={region or 'default'}")
+    # ── Intelligence data ────────────────────────────────────────────────────
+    _check_pause()
+    log("[aws] Building intelligence data for Crucible...")
+    status("aws", "Intelligence generation", "running")
+    try:
+        _build_aws_intelligence(
+            out_dir, region, _findings, _cred_report,
+            _denied_services, iam_users)
+    except Exception as exc:
+        err(f"[aws] Intelligence generation failed: {exc}")
+
+    # ── AccessDenied summary ────────────────────────────────────────────────
+    if _denied_services:
+        svc_list = ", ".join(sorted(_denied_services))
+        log(f"[aws] AccessDenied for {len(_denied_services)} service(s): {svc_list}")
+        finding(title=f"Insufficient permissions for {len(_denied_services)} AWS service(s)",
+                 severity="INFO",
+                 description=f"The audit credentials lack permissions for the following AWS "
+                             f"service(s), so their configuration could not be fully assessed: "
+                             f"{svc_list}. Findings for these services may be incomplete.",
+                 data={"catalogue_id": "FORGE-AWS-900",
+                       "affected": svc_list,
+                       "remediation": "Grant the audit IAM user/role read-only access to these services."})
+
+    log(f"[aws] AWS audit complete — profile={profile or 'default'}, region={region}")
     status("aws", "AWS Account Audit", "complete")
 
 

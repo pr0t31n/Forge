@@ -1356,6 +1356,202 @@
       ]
     },
     {
+      "id": "FORGE-AWS-026",
+      "title": "Root account without MFA",
+      "aliases": [
+        "AWS root MFA not enabled",
+        "Root user MFA disabled"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "CRITICAL",
+      "description": "The AWS root account does not have MFA enabled. The root account has unrestricted access to all AWS services and resources.",
+      "impact": "Without MFA, a compromised root password grants complete account takeover \u2014 including the ability to delete all resources, exfiltrate all data, and lock out all other users. Root access cannot be restricted by IAM policies.",
+      "cwe": [
+        "CWE-308"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 9.8,
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+      "nessus_plugin_ids": [
+        141003
+      ],
+      "qualys_qids": [],
+      "owasp_web": "A07:2021 Identification and Authentication Failures",
+      "owasp_api": "",
+      "nist_csf2": [
+        "PR.AC-7"
+      ],
+      "nist_800_53": [
+        "IA-2(1)",
+        "IA-2(2)"
+      ],
+      "nist_800_171": [
+        "3.5.3"
+      ],
+      "pci_dss_4": [
+        "8.4.2"
+      ],
+      "iso_27001": [
+        "A.8.5"
+      ],
+      "iso_27002": [
+        "8.5"
+      ],
+      "soc2": [
+        "CC6.1"
+      ],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [
+        {
+          "technique": "T1078.004",
+          "tactic": "Initial Access",
+          "name": "Cloud Accounts"
+        }
+      ],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "Enable MFA on the root account: AWS Console \u2192 My Security Credentials \u2192 MFA \u2192 Activate MFA. Use a hardware FIDO2 key for strongest protection.",
+      "remediation_component": "Authentication",
+      "remediation_category": "Access Control",
+      "remediation_effort": "Easy",
+      "validation_tools": [
+        "prowler",
+        "scout-suite"
+      ],
+      "category": "Identity & Access Management"
+    },
+    {
+      "id": "FORGE-AWS-027",
+      "title": "Orphaned IAM user: {uname}",
+      "aliases": [
+        "Unused IAM user",
+        "IAM user with no credentials"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "MEDIUM",
+      "description": "IAM user has no console password, no active access keys, and no MFA. This appears to be an unused or orphaned account.",
+      "impact": "Orphaned accounts increase attack surface \u2014 if credentials are later enabled without proper controls, the account becomes a pivot point. Dormant accounts also indicate poor identity lifecycle management.",
+      "cwe": [
+        "CWE-672"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 5.3,
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:L/A:N",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "",
+      "owasp_api": "",
+      "nist_csf2": [
+        "PR.AC-1"
+      ],
+      "nist_800_53": [
+        "AC-2(3)"
+      ],
+      "nist_800_171": [
+        "3.1.12"
+      ],
+      "pci_dss_4": [
+        "8.1.4"
+      ],
+      "iso_27001": [
+        "A.5.18"
+      ],
+      "iso_27002": [
+        "5.18"
+      ],
+      "soc2": [
+        "CC6.1"
+      ],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "Delete the unused IAM user or activate credentials if the account is still needed. Implement a periodic IAM user review process.",
+      "remediation_component": "Authentication",
+      "remediation_category": "Access Control",
+      "remediation_effort": "Easy",
+      "validation_tools": [
+        "prowler"
+      ],
+      "category": "Identity & Access Management"
+    },
+    {
+      "id": "FORGE-AWS-028",
+      "title": "IAM user has overly-permissive policy: {uname} ({pol_name})",
+      "aliases": [
+        "Overly permissive IAM policy",
+        "FullAccess policy on user"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "HIGH",
+      "description": "An IAM user has a full-access managed policy directly attached, violating the principle of least privilege.",
+      "impact": "A compromised user with a FullAccess policy grants the attacker unrestricted control over the corresponding AWS service, enabling data exfiltration, resource deletion, or privilege escalation depending on the service.",
+      "cwe": [
+        "CWE-250",
+        "CWE-269"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 7.2,
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:H/UI:N/S:U/C:H/I:H/A:H",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "",
+      "owasp_api": "",
+      "nist_csf2": [
+        "PR.AC-4"
+      ],
+      "nist_800_53": [
+        "AC-6",
+        "AC-6(1)"
+      ],
+      "nist_800_171": [
+        "3.1.5"
+      ],
+      "pci_dss_4": [
+        "7.2.2"
+      ],
+      "iso_27001": [
+        "A.8.3"
+      ],
+      "iso_27002": [
+        "8.3"
+      ],
+      "soc2": [
+        "CC6.3"
+      ],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [
+        {
+          "technique": "T1078.004",
+          "tactic": "Persistence",
+          "name": "Cloud Accounts"
+        }
+      ],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "Replace the full-access policy with a scoped policy granting only the permissions the user needs. Use IAM Access Analyzer to identify unused permissions.",
+      "remediation_component": "Authentication",
+      "remediation_category": "Access Control",
+      "remediation_effort": "Moderate",
+      "validation_tools": [
+        "prowler",
+        "scout-suite"
+      ],
+      "category": "Identity & Access Management"
+    },
+    {
       "id": "FORGE-AWS-030",
       "title": "RDS instance publicly accessible: {db_id}",
       "aliases": [
@@ -3286,6 +3482,46 @@
         "aws",
         "forge"
       ]
+    },
+    {
+      "id": "FORGE-AWS-900",
+      "title": "Insufficient permissions for {n} AWS service(s)",
+      "aliases": [
+        "AccessDenied scope limitation"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "INFO",
+      "description": "The audit credentials lack permissions for one or more AWS services. Findings for these services may be incomplete.",
+      "impact": "Incomplete audit coverage \u2014 security misconfigurations in denied services go undetected, potentially leaving vulnerabilities unaddressed.",
+      "cwe": [],
+      "cve_examples": [],
+      "cvss_v3_base": null,
+      "cvss_vector": "",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "",
+      "owasp_api": "",
+      "nist_csf2": [],
+      "nist_800_53": [],
+      "nist_800_171": [],
+      "pci_dss_4": [],
+      "iso_27001": [],
+      "iso_27002": [],
+      "soc2": [],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "Grant the audit IAM user/role read-only access to the denied services to enable comprehensive coverage.",
+      "remediation_component": "Configuration",
+      "remediation_category": "Access Control",
+      "remediation_effort": "Easy",
+      "validation_tools": [],
+      "category": "Scope Limitations"
     }
   ]
 }
