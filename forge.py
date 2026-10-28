@@ -452,12 +452,12 @@ def _aws_console_login_browser(console_url, account, username, password):
 
         on_console = _url_on_console(page.url)
         if not on_console:
-            log(f"[aws-console] On OAuth page: {page.url[:120]}...")
+            log(f"[aws-console] On OAuth page: {_sanitize_url(page.url)[:120]}...")
             _kick_oauth_redirect(page)
             status("aws-console", "AWS Console Login — completing OAuth", "running")
             on_console = _poll_for_console(page, timeout_s=90)
 
-        log(f"[aws-console] Post-login URL: {page.url}")
+        log(f"[aws-console] Post-login URL: {_sanitize_url(page.url)}")
         log(f"[aws-console] On console domain: {on_console}")
 
         if not on_console:
@@ -477,7 +477,7 @@ def _aws_console_login_browser(console_url, account, username, password):
             except Exception as exc:
                 log(f"[aws-console] IAM navigation warning: {exc}")
 
-            log(f"[aws-console] IAM page URL: {page.url}")
+            log(f"[aws-console] IAM page URL: {_sanitize_url(page.url)}")
             if _url_on_console(page.url):
                 try:
                     resp = page.evaluate("""async ([payload]) => {
@@ -691,6 +691,27 @@ def _rel(p) -> str:
 
 def _ts() -> str:
     return datetime.now().strftime("%H:%M:%S")
+
+
+def _sanitize_url(url: str) -> str:
+    """Strip sensitive query params (password, credentials) from a URL before logging."""
+    try:
+        from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+        p = urlparse(url)
+        qs = parse_qs(p.query, keep_blank_values=True)
+        _SENSITIVE = {"password", "passwd", "pass", "secret", "token",
+                      "aws_secret_access_key", "aws_session_token",
+                      "x-amz-security-token", "credential"}
+        redacted = False
+        for k in list(qs.keys()):
+            if k.lower() in _SENSITIVE:
+                qs[k] = ["[REDACTED]"]
+                redacted = True
+        if not redacted:
+            return url
+        return urlunparse(p._replace(query=urlencode(qs, doseq=True)))
+    except Exception:
+        return url
 
 
 def _tok(token: str, msg: str) -> None:
