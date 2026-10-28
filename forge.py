@@ -123,6 +123,28 @@ def _aws_configure_from_keys(access_key_id: str, secret_key: str,
 
     log(f"[aws] Temp profile '{profile}' configured (key {access_key_id[:8]}...)")
 
+    if _RUN_DIR is not None:
+        try:
+            aws_dir = _RUN_DIR / "aws_profile"
+            aws_dir.mkdir(parents=True, exist_ok=True)
+            p_creds = configparser.ConfigParser()
+            p_creds[profile] = {
+                "aws_access_key_id": access_key_id,
+                "aws_secret_access_key": secret_key,
+            }
+            with open(aws_dir / "credentials", "w") as f:
+                p_creds.write(f)
+            if region:
+                p_conf = configparser.ConfigParser()
+                section = f"profile {profile}"
+                p_conf.add_section(section)
+                p_conf.set(section, "region", region)
+                with open(aws_dir / "config", "w") as f:
+                    p_conf.write(f)
+            log(f"[aws] Profile copy saved to {aws_dir}")
+        except Exception as exc:
+            err(f"[aws] Could not save profile to run dir: {exc}")
+
     def _cleanup():
         try:
             cfg = configparser.ConfigParser()
@@ -239,6 +261,7 @@ def _aws_console_login_browser(console_url, account, username, password):
         )
 
     log("[aws-console] Lightweight login blocked (HTTP 403) — retrying with headless browser")
+    status("aws-console", "AWS Console Login — launching browser", "running")
 
     browser = None
     try:
@@ -264,11 +287,13 @@ def _aws_console_login_browser(console_url, account, username, password):
         )
         page = ctx.new_page()
 
+        status("aws-console", "AWS Console Login — navigating to sign-in", "running")
         try:
             page.goto(console_url, wait_until="networkidle", timeout=30000)
         except Exception as exc:
             raise RuntimeError(f"Cannot reach {console_url}: {exc}")
 
+        status("aws-console", "AWS Console Login — authenticating", "running")
         try:
             acct_input = page.locator("#resolving_input, #account")
             if acct_input.count() > 0 and acct_input.is_visible():
@@ -309,16 +334,24 @@ def _aws_console_login_browser(console_url, account, username, password):
         if "authentication_failed" in body or "iam_user_authentication_failure" in body:
             raise RuntimeError("AWS Console login failed — check URL, username and password")
 
-        if "console.aws.amazon.com" not in page.url:
+        if "aws.amazon.com" not in page.url:
             raise RuntimeError(
-                f"Console login did not reach the dashboard (landed on: {page.url})\n"
+                f"Console login did not reach AWS (landed on: {page.url})\n"
                 "  -> Create access keys manually: Console > IAM > Users > Security credentials > Create access key"
             )
 
         log("[aws-console] Browser login successful — creating temp access key via IAM API")
+        status("aws-console", "AWS Console Login — creating temp key", "running")
 
-        iam_endpoint = "https://us-east-1.console.aws.amazon.com/iam/api"
+        try:
+            page.goto("https://us-east-1.console.aws.amazon.com/iam/home#/users",
+                       wait_until="networkidle", timeout=30000)
+        except Exception:
+            pass
+
         create_payload = json.dumps({"UserName": username})
+
+        iam_api = page.url.split("/iam/")[0] + "/iam/api" if "/iam/" in page.url else "https://us-east-1.console.aws.amazon.com/iam/api"
 
         try:
             resp = page.evaluate("""async ([endpoint, payload]) => {
@@ -332,7 +365,7 @@ def _aws_console_login_browser(console_url, account, username, password):
                     credentials: 'include'
                 });
                 return {status: r.status, body: await r.text()};
-            }""", [iam_endpoint, create_payload])
+            }""", [iam_api, create_payload])
 
             key_data = json.loads(resp["body"])
         except Exception as exc:
@@ -426,33 +459,8 @@ def _aws_console_login(console_url: str, username: str, password: str,
 
     profile = _aws_configure_from_keys(access_key_id, secret_key, region)
 
-    base_cleanup = _aws_tmp_cleanup
-
-    def _full_cleanup():
-        log("[aws-console] Cleaning up temporary access key...")
-        try:
-            import requests as _req
-            _sess = _req.Session()
-            del_payload = json.dumps({
-                "UserName": username,
-                "AccessKeyId": access_key_id,
-            })
-            _sess.post(
-                "https://us-east-1.console.aws.amazon.com/iam/api",
-                data=del_payload,
-                headers={
-                    "Content-Type": "application/x-amz-json-1.1",
-                    "X-Amz-Target": "AWSIdentityManagementService.DeleteAccessKey",
-                },
-                timeout=15,
-            )
-            log(f"[aws-console] Deleted temp access key {access_key_id[:8]}...")
-        except Exception as exc:
-            err(f"[aws-console] Could not auto-delete temp key {access_key_id[:8]}... — delete it manually in IAM: {exc}")
-        if base_cleanup:
-            base_cleanup()
-
-    _aws_tmp_cleanup = _full_cleanup
+    log(f"[aws-console] Access key {access_key_id[:8]}... left active in IAM for re-use (e.g. Prowler)")
+    log("[aws-console] Remember to delete it from IAM when the engagement ends")
     status("aws-console", "AWS Console Login", "complete")
     return profile
 
@@ -2159,7 +2167,7 @@ def main() -> int:
         if aws_profile is not None:
             audit_aws(aws_profile, args.aws_region, project_dir)
 
-    # Cleanup temp AWS credentials
+    # Cleanup temp AWS credentials from ~/.aws/ (copy lives in run dir)
     if _aws_tmp_cleanup:
         try:
             _aws_tmp_cleanup()
