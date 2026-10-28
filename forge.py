@@ -66,12 +66,66 @@ _MANUAL_KEY_STEPS = (
     "  6. Copy the Access Key ID and Secret Access Key (this is the only time\n"
     "     the secret is shown — save it now)\n"
     "  7. Re-run Forge with: --aws-access-key-id <key> --aws-secret-key <secret>\n"
-    "     Or set the auth method to 'Access Keys' in the Crucible project wizard"
+    "     Or set the auth method to 'Access Keys' in the Crucible project wizard\n\n"
+    "  NOTE: The IAM user must have the iam:CreateAccessKey permission.\n"
+    "  If the user lacks this permission, ask an AWS admin to either:\n"
+    "    a) Attach a policy granting iam:CreateAccessKey to the pentest user, OR\n"
+    "    b) Create the access key on the user's behalf via IAM → Users → <user>\n"
+    "       → Security credentials → Create access key, and provide the key pair"
+)
+
+_IAM_PERMISSION_STEPS = (
+    "The IAM user does not have permission to create access keys (iam:CreateAccessKey).\n"
+    "This is an AWS policy restriction — neither Forge nor manual Console access can\n"
+    "create keys until the permission is granted.\n\n"
+    "Ask an AWS administrator to do ONE of the following:\n\n"
+    "  Option A — Grant iam:CreateAccessKey to the pentest user:\n"
+    "    1. Log into the AWS Console as an admin\n"
+    "    2. Go to IAM → Users → select the pentest user → Permissions tab\n"
+    "    3. Click 'Add permissions' → 'Attach policies directly'\n"
+    "    4. Create an inline policy with this JSON:\n"
+    '       {"Version":"2012-10-17","Statement":[{"Effect":"Allow",\n'
+    '        "Action":"iam:CreateAccessKey","Resource":"arn:aws:iam::*:user/${aws:username}"}]}\n'
+    "    5. Save the policy, then re-run Forge\n\n"
+    "  Option B — Have the admin create the key directly:\n"
+    "    1. Log into the AWS Console as an admin\n"
+    "    2. Go to IAM → Users → select the pentest user → Security credentials tab\n"
+    "    3. Scroll to 'Access keys' → 'Create access key'\n"
+    "    4. Select 'Command Line Interface (CLI)' → Next → Create\n"
+    "    5. Copy the Access Key ID and Secret Access Key\n"
+    "    6. Re-run Forge with: --aws-access-key-id <key> --aws-secret-key <secret>\n"
+    "       Or set the auth method to 'Access Keys' in the Crucible project wizard"
 )
 
 _RUN_DIR: Optional[Path] = None
 _RUNLOG = None
 _pause = None
+
+_IAM_DENY_PATTERNS = ("not authorized to perform", "AccessDenied", "AccessDeniedException")
+
+
+def _check_iam_error(resp_data: dict) -> None:
+    """Raise with specific guidance if an IAM API response is a permission denial."""
+    if not isinstance(resp_data, dict):
+        return
+    err_type = resp_data.get("__type", "") or resp_data.get("Error", {}).get("Code", "")
+    err_msg = (resp_data.get("message", "") or resp_data.get("Message", "")
+               or resp_data.get("Error", {}).get("Message", ""))
+    combined = f"{err_type} {err_msg}"
+    for pat in _IAM_DENY_PATTERNS:
+        if pat.lower() in combined.lower():
+            raise RuntimeError(
+                f"AWS IAM permission denied: {err_msg or err_type}\n\n"
+                + _IAM_PERMISSION_STEPS
+            )
+    if err_type and "LimitExceeded" in err_type:
+        raise RuntimeError(
+            f"AWS IAM limit exceeded: {err_msg}\n"
+            "The user may already have the maximum number of access keys (2).\n"
+            "Delete an existing key in IAM → Users → <user> → Security credentials\n"
+            "before creating a new one."
+        )
+
 
 _CSV_FIELDS = ["id", "tool", "title", "datetime", "ip", "port", "hostname",
                "risk", "command", "description", "output_file", "affected",
@@ -439,7 +493,10 @@ def _aws_console_login_browser(console_url, account, username, password):
                         return {status: r.status, body: await r.text()};
                     }""", [create_payload])
                     key_data = json.loads(resp["body"])
+                    _check_iam_error(key_data)
                     log(f"[aws-console] In-page CreateAccessKey succeeded")
+                except RuntimeError:
+                    raise
                 except Exception as exc:
                     log(f"[aws-console] In-page IAM fetch failed: {exc}")
 
@@ -468,7 +525,17 @@ def _aws_console_login_browser(console_url, account, username, password):
                     log(f"[aws-console] Cookie fallback {ep}: HTTP {r.status_code}")
                     if r.status_code == 200:
                         key_data = r.json()
+                        _check_iam_error(key_data)
                         break
+                    if r.status_code == 403:
+                        try:
+                            _check_iam_error(r.json())
+                        except RuntimeError:
+                            raise
+                        except Exception:
+                            pass
+                except RuntimeError:
+                    raise
                 except Exception as exc:
                     log(f"[aws-console] Cookie fallback {ep}: {exc}")
 
@@ -494,7 +561,10 @@ def _aws_console_login_browser(console_url, account, username, password):
                         return {status: r.status, body: await r.text()};
                     }""", [create_payload])
                     key_data = json.loads(resp["body"])
+                    _check_iam_error(key_data)
                     log("[aws-console] Retry navigate+fetch succeeded")
+            except RuntimeError:
+                raise
             except Exception as exc:
                 log(f"[aws-console] Retry navigate+fetch failed: {exc}")
 
@@ -568,20 +638,26 @@ def _aws_console_login(console_url: str, username: str, password: str,
                 timeout=30,
             )
             key_data = key_resp.json()
+            _check_iam_error(key_data)
+        except RuntimeError:
+            raise
         except Exception as exc:
             raise RuntimeError(
                 f"Failed to create access key via Console: {exc}\n\n"
                 + _MANUAL_KEY_STEPS
             )
 
+    _check_iam_error(key_data)
     ak = key_data.get("CreateAccessKeyResponse", {}).get("CreateAccessKeyResult", {}).get("AccessKey", {})
     if not ak:
         ak = key_data.get("AccessKey", {})
     access_key_id = ak.get("AccessKeyId", "")
     secret_key = ak.get("SecretAccessKey", "")
     if not access_key_id or not secret_key:
+        detail = json.dumps(key_data, indent=2)[:500] if key_data else "(empty response)"
         raise RuntimeError(
-            "Console did not return access keys — the sign-in endpoint may have changed.\n\n"
+            "Console did not return access keys.\n"
+            f"  Response: {detail}\n\n"
             + _MANUAL_KEY_STEPS
         )
 
