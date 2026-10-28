@@ -55,6 +55,20 @@ except ImportError:
 _MANAGED = os.environ.get("CRUCIBLE_MANAGED", "") == "1"
 _findings: list = []
 
+_MANUAL_KEY_STEPS = (
+    "To create access keys manually:\n"
+    "  1. Open a browser and log into the AWS Console for this account\n"
+    "  2. Click your username in the top-right corner → 'Security credentials'\n"
+    "     (or go to: IAM → Users → select the pentest user → Security credentials tab)\n"
+    "  3. Scroll down to 'Access keys' and click 'Create access key'\n"
+    "  4. Select 'Command Line Interface (CLI)' as the use case → Next\n"
+    "  5. Click 'Create access key'\n"
+    "  6. Copy the Access Key ID and Secret Access Key (this is the only time\n"
+    "     the secret is shown — save it now)\n"
+    "  7. Re-run Forge with: --aws-access-key-id <key> --aws-secret-key <secret>\n"
+    "     Or set the auth method to 'Access Keys' in the Crucible project wizard"
+)
+
 _RUN_DIR: Optional[Path] = None
 _RUNLOG = None
 _pause = None
@@ -241,8 +255,9 @@ def _check_console_body_errors(body):
         )
     if "mfatype" in body or "mfa_serial" in body or "mfa-code" in body:
         raise RuntimeError(
-            "AWS sign-in requires MFA — automated login cannot complete MFA challenges.\n"
-            "  -> Create access keys manually or use --aws-profile with an already-authenticated CLI profile."
+            "AWS sign-in requires MFA — automated login cannot complete MFA challenges.\n\n"
+            + _MANUAL_KEY_STEPS
+            + "\n  Or use --aws-profile with an already-authenticated CLI profile."
         )
     if "iam_user_authentication_failure" in body or "authentication_failed" in body:
         raise RuntimeError("AWS Console login failed — check URL, username and password")
@@ -289,8 +304,8 @@ def _aws_console_login_browser(console_url, account, username, password):
     except ImportError:
         raise RuntimeError(
             "Playwright required for Console login (AWS blocked the lightweight method).\n"
-            "  -> Run: cd /opt/pr0t31n/Forge && sudo python3 install.py\n"
-            "  -> Or create access keys manually: Console > IAM > Users > Security credentials > Create access key"
+            "  -> Run: cd /opt/pr0t31n/Forge && sudo python3 install.py\n\n"
+            + _MANUAL_KEY_STEPS
         )
 
     log("[aws-console] Lightweight login blocked (HTTP 403) — retrying with headless browser")
@@ -304,8 +319,8 @@ def _aws_console_login_browser(console_url, account, username, password):
         raise RuntimeError(
             f"Playwright failed to start: {exc}\n"
             "  -> Run: cd /opt/pr0t31n/Forge && sudo python3 install.py\n"
-            "     This upgrades Playwright and installs Chromium + OS deps.\n"
-            "  -> Or create access keys manually: Console > IAM > Users > Security credentials > Create access key"
+            "     This upgrades Playwright and installs Chromium + OS deps.\n\n"
+            + _MANUAL_KEY_STEPS
         )
 
     try:
@@ -374,8 +389,9 @@ def _aws_console_login_browser(console_url, account, username, password):
             )
         if "mfatype" in body or "mfa" in current_url:
             raise RuntimeError(
-                "AWS sign-in requires MFA — automated login cannot complete MFA challenges.\n"
-                "  -> Create access keys manually or use --aws-profile."
+                "AWS sign-in requires MFA — automated login cannot complete MFA challenges.\n\n"
+                + _MANUAL_KEY_STEPS
+                + "\n  Or use --aws-profile with an already-authenticated CLI profile."
             )
         if "authentication_failed" in body or "iam_user_authentication_failure" in body:
             raise RuntimeError("AWS Console login failed — check URL, username and password")
@@ -485,9 +501,8 @@ def _aws_console_login_browser(console_url, account, username, password):
         if key_data is None:
             raise RuntimeError(
                 "AWS OAuth redirect did not complete — the headless browser was likely detected.\n"
-                "  Page was on: " + page.url[:200] + "\n"
-                "  -> Create access keys manually: Console > IAM > Users > Security credentials > Create access key\n"
-                "  -> Then pass them via --aws-access-key-id and --aws-secret-key"
+                "  Page was on: " + page.url[:200] + "\n\n"
+                + _MANUAL_KEY_STEPS
             )
 
         return key_data
@@ -555,8 +570,8 @@ def _aws_console_login(console_url: str, username: str, password: str,
             key_data = key_resp.json()
         except Exception as exc:
             raise RuntimeError(
-                f"Failed to create access key via Console: {exc}\n"
-                "Create access keys manually: Console > IAM > Users > Security credentials > Create access key"
+                f"Failed to create access key via Console: {exc}\n\n"
+                + _MANUAL_KEY_STEPS
             )
 
     ak = key_data.get("CreateAccessKeyResponse", {}).get("CreateAccessKeyResult", {}).get("AccessKey", {})
@@ -566,9 +581,8 @@ def _aws_console_login(console_url: str, username: str, password: str,
     secret_key = ak.get("SecretAccessKey", "")
     if not access_key_id or not secret_key:
         raise RuntimeError(
-            "Console did not return access keys — the sign-in endpoint may have changed.\n"
-            "Create them manually: Console > IAM > Users > Security credentials > Create access key,\n"
-            "then pass them via --aws-access-key-id and --aws-secret-key"
+            "Console did not return access keys — the sign-in endpoint may have changed.\n\n"
+            + _MANUAL_KEY_STEPS
         )
 
     log(f"[aws-console] Temporary access key created: {access_key_id[:8]}...")
