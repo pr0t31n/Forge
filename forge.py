@@ -631,11 +631,18 @@ def _aws_console_login_visible(console_url, account, username, password):
         return None
 
     try:
-        browser = pw.chromium.launch(
-            headless=False,
-            args=["--disable-blink-features=AutomationControlled",
-                  "--start-maximized"],
-        )
+        try:
+            browser = pw.chromium.launch(
+                headless=False,
+                args=["--disable-blink-features=AutomationControlled",
+                      "--start-maximized"],
+            )
+        except Exception as launch_exc:
+            if "XServer" in str(launch_exc) or "Target page, context or browser has been closed" in str(launch_exc):
+                log("[aws-console] No display server (X11/Wayland) — visible browser unavailable on this host")
+                log("[aws-console] This fallback requires a desktop environment or VNC session")
+                return None
+            raise
         ctx = browser.new_context(
             viewport={"width": 1280, "height": 900},
             locale="en-US",
@@ -755,7 +762,7 @@ def _aws_console_login(console_url: str, username: str, password: str,
                         "All browser login methods failed.\n"
                         "  1. Lightweight requests: HTTP 403\n"
                         "  2. Headless browser: AWS anti-bot detection\n"
-                        "  3. Visible browser: manual login did not succeed\n\n"
+                        "  3. Visible browser: no display server or manual login did not succeed\n\n"
                         + _MANUAL_KEY_STEPS
                     )
             else:
