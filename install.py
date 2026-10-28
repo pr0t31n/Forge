@@ -152,15 +152,12 @@ def _rpm_installed(pkg):
 
 
 def install_playwright():
-    """Install Playwright Chromium browser for Console Login support."""
-    try:
-        import playwright
-        print("  [ok] playwright already installed")
-    except ImportError:
-        print("[install] Installing playwright ...")
-        _run([sys.executable, "-m", "pip", "install", "--break-system-packages", "playwright"], check=False)
-    print("[install] Installing Playwright Chromium browser ...")
-    _run([sys.executable, "-m", "playwright", "install", "chromium"], check=False)
+    """Install/upgrade Playwright + Chromium for Console Login support."""
+    print("[install] Installing/upgrading Playwright via pip ...")
+    _run([sys.executable, "-m", "pip", "install", "--break-system-packages",
+          "--upgrade", "playwright>=1.40.0"], check=False)
+    print("[install] Installing Playwright Chromium browser + OS deps ...")
+    _run([sys.executable, "-m", "playwright", "install", "--with-deps", "chromium"], check=False)
 
 
 def main():

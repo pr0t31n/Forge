@@ -234,13 +234,25 @@ def _aws_console_login_browser(console_url, account, username, password):
     except ImportError:
         raise RuntimeError(
             "Playwright required for Console login (AWS blocked the lightweight method).\n"
-            "  Install: pip install playwright && playwright install chromium\n"
-            "  Or create access keys manually: Console > IAM > Users > Security credentials > Create access key"
+            "  -> Run: cd /opt/pr0t31n/Forge && sudo python3 install.py\n"
+            "  -> Or create access keys manually: Console > IAM > Users > Security credentials > Create access key"
         )
 
     log("[aws-console] Lightweight login blocked (HTTP 403) — retrying with headless browser")
 
-    with sync_playwright() as pw:
+    browser = None
+    try:
+        pw_ctx = sync_playwright()
+        pw = pw_ctx.start()
+    except Exception as exc:
+        raise RuntimeError(
+            f"Playwright failed to start: {exc}\n"
+            "  -> Run: cd /opt/pr0t31n/Forge && sudo python3 install.py\n"
+            "     This upgrades Playwright and installs Chromium + OS deps.\n"
+            "  -> Or create access keys manually: Console > IAM > Users > Security credentials > Create access key"
+        )
+
+    try:
         browser = pw.chromium.launch(headless=True)
         ctx = browser.new_context(
             user_agent=(
@@ -255,7 +267,6 @@ def _aws_console_login_browser(console_url, account, username, password):
         try:
             page.goto(console_url, wait_until="networkidle", timeout=30000)
         except Exception as exc:
-            browser.close()
             raise RuntimeError(f"Cannot reach {console_url}: {exc}")
 
         try:
@@ -277,31 +288,28 @@ def _aws_console_login_browser(console_url, account, username, password):
             page.wait_for_load_state("networkidle", timeout=30000)
         except PwTimeout:
             pass
+        except RuntimeError:
+            raise
         except Exception as exc:
-            browser.close()
             raise RuntimeError(f"Browser login interaction failed: {exc}")
 
         body = page.content().lower()
-        url = page.url.lower()
+        current_url = page.url.lower()
 
-        if "newpasswordrequired" in body or "change_password" in body or "new-password" in body or "/updateaccount" in url:
-            browser.close()
+        if "newpasswordrequired" in body or "change_password" in body or "new-password" in body or "/updateaccount" in current_url:
             raise RuntimeError(
                 "AWS Console requires a password change before login.\n"
                 "  -> Log into the Console manually in a browser, change your password, then re-run."
             )
-        if "mfatype" in body or "mfa" in url:
-            browser.close()
+        if "mfatype" in body or "mfa" in current_url:
             raise RuntimeError(
                 "AWS sign-in requires MFA — automated login cannot complete MFA challenges.\n"
                 "  -> Create access keys manually or use --aws-profile."
             )
         if "authentication_failed" in body or "iam_user_authentication_failure" in body:
-            browser.close()
             raise RuntimeError("AWS Console login failed — check URL, username and password")
 
         if "console.aws.amazon.com" not in page.url:
-            browser.close()
             raise RuntimeError(
                 f"Console login did not reach the dashboard (landed on: {page.url})\n"
                 "  -> Create access keys manually: Console > IAM > Users > Security credentials > Create access key"
@@ -328,14 +336,22 @@ def _aws_console_login_browser(console_url, account, username, password):
 
             key_data = json.loads(resp["body"])
         except Exception as exc:
-            browser.close()
             raise RuntimeError(
                 f"Failed to create access key via Console browser session: {exc}\n"
                 "  -> Create access keys manually: Console > IAM > Users > Security credentials > Create access key"
             )
 
-        browser.close()
         return key_data
+    finally:
+        if browser:
+            try:
+                browser.close()
+            except Exception:
+                pass
+        try:
+            pw.stop()
+        except Exception:
+            pass
 
 
 def _aws_console_login(console_url: str, username: str, password: str,
