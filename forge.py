@@ -1849,7 +1849,7 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
     if root_row:
         if root_row.get("mfa_active", "").lower() != "true":
             log("[aws] Root account does NOT have MFA enabled (CRITICAL)")
-            finding(title="Root account without MFA",
+            finding(title="IAM: Root account without MFA",
                      severity="CRITICAL",
                      description="The AWS root account does not have MFA enabled. The root account "
                                  "has unrestricted access to all AWS services and resources — "
@@ -1862,7 +1862,7 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
 
         if root_row.get("access_key_1_active", "").lower() == "true":
             log("[aws] Root account has active access keys (CRITICAL)")
-            finding(title="Root account has active access keys",
+            finding(title="IAM: Root account has active access keys",
                      severity="CRITICAL",
                      description="The AWS root account has access keys configured. Root keys should never exist.",
                      data={"catalogue_id": "FORGE-AWS-023", "affected": "root",
@@ -2058,7 +2058,7 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
             log("[aws] CloudTrail — AccessDenied (cannot determine trail status)")
         else:
             log("[aws] No CloudTrail trails configured (HIGH)")
-            finding(title="No CloudTrail trails configured",
+            finding(title="CloudTrail: No CloudTrail trails configured",
                      severity="HIGH",
                      description="No CloudTrail trails exist in this region/account. API activity is not logged.",
                      data={"catalogue_id": "FORGE-AWS-040",
@@ -2308,7 +2308,7 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
             issues.append("RequireLowercaseCharacters=false")
         if issues:
             log(f"[aws] Password policy weaknesses: {'; '.join(issues)} (MEDIUM)")
-            finding(title="IAM password policy does not meet complexity requirements",
+            finding(title="IAM: Password policy does not meet complexity requirements",
                      severity="MEDIUM",
                      description=f"Account password policy has weaknesses: {'; '.join(issues)}.",
                      data={"catalogue_id": "FORGE-AWS-024", "affected": "account",
@@ -2321,7 +2321,7 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
             log("[aws] Password policy — AccessDenied (cannot determine status)")
         else:
             log("[aws] No account password policy configured (MEDIUM)")
-            finding(title="IAM account password policy not configured",
+            finding(title="IAM: Account password policy not configured",
                      severity="MEDIUM",
                      description="No custom IAM password policy is configured — AWS defaults apply (6 char minimum, no complexity).",
                      data={"catalogue_id": "FORGE-AWS-024", "affected": "account",
@@ -2511,7 +2511,7 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
             log("[aws] GuardDuty — AccessDenied (cannot determine status)")
         else:
             log("[aws] GuardDuty not enabled — no detectors found (MEDIUM)")
-            finding(title="GuardDuty not enabled",
+            finding(title="GuardDuty: Not enabled",
                      severity="MEDIUM",
                      description="Amazon GuardDuty is not enabled in this region — threat detection for the account is absent.",
                      data={"catalogue_id": "FORGE-AWS-100",
@@ -2532,7 +2532,7 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
             log("[aws] Security Hub — AccessDenied (cannot determine status)")
         else:
             log("[aws] Security Hub not enabled (MEDIUM)")
-            finding(title="Security Hub not enabled",
+            finding(title="Security Hub: Not enabled",
                      severity="MEDIUM",
                      description="AWS Security Hub is not enabled in this region — centralized security posture management is absent.",
                      data={"catalogue_id": "FORGE-AWS-101",
@@ -2831,7 +2831,7 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
     if _denied_services:
         svc_list = ", ".join(sorted(_denied_services))
         log(f"[aws] AccessDenied for {len(_denied_services)} service(s): {svc_list}")
-        finding(title=f"Insufficient permissions for {len(_denied_services)} AWS service(s)",
+        finding(title=f"Scope Limitations: Insufficient permissions for {len(_denied_services)} AWS service(s)",
                  severity="INFO",
                  description=f"The audit credentials lack permissions for the following AWS "
                              f"service(s), so their configuration could not be fully assessed: "

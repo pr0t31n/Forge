@@ -1173,7 +1173,7 @@
     },
     {
       "id": "FORGE-AWS-023",
-      "title": "Root account has active access keys",
+      "title": "IAM: Root account has active access keys",
       "aliases": [
         "AWS root access keys"
       ],
@@ -1239,10 +1239,10 @@
     },
     {
       "id": "FORGE-AWS-024",
-      "title": "IAM password policy does not meet complexity requirements",
+      "title": "IAM: Password policy does not meet complexity requirements",
       "aliases": [
         "IAM weak password policy",
-        "IAM password policy not configured"
+        "IAM: Account password policy not configured"
       ],
       "source_tools": [
         "forge"
@@ -1357,7 +1357,7 @@
     },
     {
       "id": "FORGE-AWS-026",
-      "title": "Root account without MFA",
+      "title": "IAM: Root account without MFA",
       "aliases": [
         "AWS root MFA not enabled",
         "Root user MFA disabled"
@@ -1828,7 +1828,7 @@
     },
     {
       "id": "FORGE-AWS-040",
-      "title": "No CloudTrail trails configured",
+      "title": "CloudTrail: No CloudTrail trails configured",
       "aliases": [
         "CloudTrail not enabled"
       ],
@@ -2757,7 +2757,7 @@
     },
     {
       "id": "FORGE-AWS-100",
-      "title": "GuardDuty not enabled",
+      "title": "GuardDuty: Not enabled",
       "aliases": [
         "Amazon GuardDuty disabled"
       ],
@@ -2816,7 +2816,7 @@
     },
     {
       "id": "FORGE-AWS-101",
-      "title": "Security Hub not enabled",
+      "title": "Security Hub: Not enabled",
       "aliases": [
         "AWS Security Hub disabled"
       ],
@@ -3485,7 +3485,7 @@
     },
     {
       "id": "FORGE-AWS-900",
-      "title": "Insufficient permissions for {n} AWS service(s)",
+      "title": "Scope Limitations: Insufficient permissions for {n} AWS service(s)",
       "aliases": [
         "AccessDenied scope limitation"
       ],
