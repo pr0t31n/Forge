@@ -867,8 +867,7 @@ def _sanitize_url(url: str) -> str:
 
 def _tok(token: str, msg: str) -> None:
     if _MANAGED:
-        ts = datetime.now().isoformat()
-        print(f"{token}:[{ts}] {msg}", flush=True)
+        print(f"{token}:{msg}", flush=True)
     else:
         print(f"[{_ts()}] {msg}", flush=True)
 
