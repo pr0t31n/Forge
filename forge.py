@@ -161,27 +161,14 @@ def _parse_account_from_url(url: str) -> str:
     return ""
 
 
-def _aws_console_login(console_url: str, username: str, password: str,
-                        region: str = "") -> str:
-    """Log into the AWS Console, create a temp access key, configure a CLI
-    profile and return the profile name.
-
-    On failure raises RuntimeError with a user-friendly message.
-    """
-    global _aws_tmp_cleanup
-    import configparser
+def _aws_console_login_requests(console_url, account, username, password, signin_url):
+    """Lightweight requests-based Console login. Returns a session + True on
+    success, or (None, False) on 403 (anti-bot block)."""
     try:
         import requests as _req
     except ImportError:
         raise RuntimeError("requests library required for console login — pip install requests")
 
-    account = _parse_account_from_url(console_url)
-    if not account:
-        raise RuntimeError(f"Cannot extract account ID/alias from URL: {console_url}")
-    log(f"[aws-console] Account: {account}, user: {username}")
-    status("aws-console", "AWS Console Login", "running")
-
-    signin_url = "https://signin.aws.amazon.com/signin"
     sess = _req.Session()
     sess.headers["User-Agent"] = (
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -209,36 +196,203 @@ def _aws_console_login(console_url: str, username: str, password: str,
         raise RuntimeError(f"Console login request failed: {exc}")
 
     body = login_resp.text.lower()
-    if "captcha" in body:
-        raise RuntimeError("AWS sign-in requires CAPTCHA — create access keys manually via the Console")
-    if "mfatype" in body or "mfa_serial" in body:
-        raise RuntimeError("AWS sign-in requires MFA — create access keys manually or use --aws-profile")
-    if "iam_user_authentication_failure" in body or "authentication_failed" in body:
-        raise RuntimeError("AWS Console login failed — check URL, username and password")
+    _check_console_body_errors(body)
+    if login_resp.status_code == 403:
+        return None, False
     if login_resp.status_code not in (200, 301, 302, 303):
         raise RuntimeError(f"AWS Console login returned HTTP {login_resp.status_code}")
 
-    log("[aws-console] Console login successful — creating temp access key")
+    return sess, True
 
-    iam_endpoint = "https://us-east-1.console.aws.amazon.com/iam/api"
-    create_payload = json.dumps({"UserName": username})
+
+def _check_console_body_errors(body):
+    """Inspect AWS sign-in response body for known error conditions."""
+    if "newpasswordrequired" in body or "change_password" in body or "new-password" in body:
+        raise RuntimeError(
+            "AWS Console requires a password change before login.\n"
+            "  -> Log into the Console manually in a browser, change your password, then re-run."
+        )
+    if "captcha" in body:
+        raise RuntimeError(
+            "AWS sign-in requires CAPTCHA — automated login is blocked.\n"
+            "  -> Retrying with headless browser..."
+        )
+    if "mfatype" in body or "mfa_serial" in body or "mfa-code" in body:
+        raise RuntimeError(
+            "AWS sign-in requires MFA — automated login cannot complete MFA challenges.\n"
+            "  -> Create access keys manually or use --aws-profile with an already-authenticated CLI profile."
+        )
+    if "iam_user_authentication_failure" in body or "authentication_failed" in body:
+        raise RuntimeError("AWS Console login failed — check URL, username and password")
+
+
+def _aws_console_login_browser(console_url, account, username, password):
+    """Playwright headless Chromium fallback for Console login when the
+    lightweight requests approach is blocked (403)."""
+    try:
+        from playwright.sync_api import sync_playwright, TimeoutError as PwTimeout
+    except ImportError:
+        raise RuntimeError(
+            "Playwright required for Console login (AWS blocked the lightweight method).\n"
+            "  Install: pip install playwright && playwright install chromium\n"
+            "  Or create access keys manually: Console > IAM > Users > Security credentials > Create access key"
+        )
+
+    log("[aws-console] Lightweight login blocked (HTTP 403) — retrying with headless browser")
+
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True)
+        ctx = browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            ),
+            viewport={"width": 1280, "height": 720},
+            locale="en-US",
+        )
+        page = ctx.new_page()
+
+        try:
+            page.goto(console_url, wait_until="networkidle", timeout=30000)
+        except Exception as exc:
+            browser.close()
+            raise RuntimeError(f"Cannot reach {console_url}: {exc}")
+
+        try:
+            acct_input = page.locator("#resolving_input, #account")
+            if acct_input.count() > 0 and acct_input.is_visible():
+                acct_input.fill(account)
+                page.locator("#next_button, button[type='submit']").first.click()
+                page.wait_for_load_state("networkidle", timeout=10000)
+
+            user_input = page.locator("#username")
+            if user_input.count() > 0 and user_input.is_visible():
+                user_input.fill(username)
+
+            pass_input = page.locator("#password")
+            if pass_input.count() > 0 and pass_input.is_visible():
+                pass_input.fill(password)
+
+            page.locator("#signin_button, button[type='submit']").first.click()
+            page.wait_for_load_state("networkidle", timeout=30000)
+        except PwTimeout:
+            pass
+        except Exception as exc:
+            browser.close()
+            raise RuntimeError(f"Browser login interaction failed: {exc}")
+
+        body = page.content().lower()
+        url = page.url.lower()
+
+        if "newpasswordrequired" in body or "change_password" in body or "new-password" in body or "/updateaccount" in url:
+            browser.close()
+            raise RuntimeError(
+                "AWS Console requires a password change before login.\n"
+                "  -> Log into the Console manually in a browser, change your password, then re-run."
+            )
+        if "mfatype" in body or "mfa" in url:
+            browser.close()
+            raise RuntimeError(
+                "AWS sign-in requires MFA — automated login cannot complete MFA challenges.\n"
+                "  -> Create access keys manually or use --aws-profile."
+            )
+        if "authentication_failed" in body or "iam_user_authentication_failure" in body:
+            browser.close()
+            raise RuntimeError("AWS Console login failed — check URL, username and password")
+
+        if "console.aws.amazon.com" not in page.url:
+            browser.close()
+            raise RuntimeError(
+                f"Console login did not reach the dashboard (landed on: {page.url})\n"
+                "  -> Create access keys manually: Console > IAM > Users > Security credentials > Create access key"
+            )
+
+        log("[aws-console] Browser login successful — creating temp access key via IAM API")
+
+        iam_endpoint = "https://us-east-1.console.aws.amazon.com/iam/api"
+        create_payload = json.dumps({"UserName": username})
+
+        try:
+            resp = page.evaluate("""async ([endpoint, payload]) => {
+                const r = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-amz-json-1.1',
+                        'X-Amz-Target': 'AWSIdentityManagementService.CreateAccessKey'
+                    },
+                    body: payload,
+                    credentials: 'include'
+                });
+                return {status: r.status, body: await r.text()};
+            }""", [iam_endpoint, create_payload])
+
+            key_data = json.loads(resp["body"])
+        except Exception as exc:
+            browser.close()
+            raise RuntimeError(
+                f"Failed to create access key via Console browser session: {exc}\n"
+                "  -> Create access keys manually: Console > IAM > Users > Security credentials > Create access key"
+            )
+
+        browser.close()
+        return key_data
+
+
+def _aws_console_login(console_url: str, username: str, password: str,
+                        region: str = "") -> str:
+    """Log into the AWS Console, create a temp access key, configure a CLI
+    profile and return the profile name.
+
+    Tries lightweight requests POST first; if AWS blocks with 403, falls back
+    to Playwright headless Chromium which passes anti-bot checks.
+
+    On failure raises RuntimeError with a user-friendly message.
+    """
+    global _aws_tmp_cleanup
+    import configparser
+
+    account = _parse_account_from_url(console_url)
+    if not account:
+        raise RuntimeError(f"Cannot extract account ID/alias from URL: {console_url}")
+    log(f"[aws-console] Account: {account}, user: {username}")
+    status("aws-console", "AWS Console Login", "running")
+
+    signin_url = "https://signin.aws.amazon.com/signin"
+    sess = None
+    used_browser = False
 
     try:
-        key_resp = sess.post(
-            iam_endpoint,
-            data=create_payload,
-            headers={
-                "Content-Type": "application/x-amz-json-1.1",
-                "X-Amz-Target": "AWSIdentityManagementService.CreateAccessKey",
-            },
-            timeout=30,
-        )
-        key_data = key_resp.json()
-    except Exception as exc:
-        raise RuntimeError(
-            f"Failed to create access key via Console: {exc}\n"
-            "Create access keys manually: Console → IAM → Users → Security credentials → Create access key"
-        )
+        sess, ok = _aws_console_login_requests(console_url, account, username, password, signin_url)
+    except RuntimeError as exc:
+        if "CAPTCHA" in str(exc):
+            ok = False
+        else:
+            raise
+
+    if not ok:
+        key_data = _aws_console_login_browser(console_url, account, username, password)
+        used_browser = True
+    else:
+        log("[aws-console] Console login successful — creating temp access key")
+        iam_endpoint = "https://us-east-1.console.aws.amazon.com/iam/api"
+        create_payload = json.dumps({"UserName": username})
+
+        try:
+            key_resp = sess.post(
+                iam_endpoint,
+                data=create_payload,
+                headers={
+                    "Content-Type": "application/x-amz-json-1.1",
+                    "X-Amz-Target": "AWSIdentityManagementService.CreateAccessKey",
+                },
+                timeout=30,
+            )
+            key_data = key_resp.json()
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed to create access key via Console: {exc}\n"
+                "Create access keys manually: Console > IAM > Users > Security credentials > Create access key"
+            )
 
     ak = key_data.get("CreateAccessKeyResponse", {}).get("CreateAccessKeyResult", {}).get("AccessKey", {})
     if not ak:
@@ -248,7 +402,7 @@ def _aws_console_login(console_url: str, username: str, password: str,
     if not access_key_id or not secret_key:
         raise RuntimeError(
             "Console did not return access keys — the sign-in endpoint may have changed.\n"
-            "Create them manually: Console → IAM → Users → Security credentials → Create access key,\n"
+            "Create them manually: Console > IAM > Users > Security credentials > Create access key,\n"
             "then pass them via --aws-access-key-id and --aws-secret-key"
         )
 
@@ -256,18 +410,19 @@ def _aws_console_login(console_url: str, username: str, password: str,
 
     profile = _aws_configure_from_keys(access_key_id, secret_key, region)
 
-    # Override cleanup to also delete the remote key
     base_cleanup = _aws_tmp_cleanup
 
     def _full_cleanup():
         log("[aws-console] Cleaning up temporary access key...")
         try:
+            import requests as _req
+            _sess = _req.Session()
             del_payload = json.dumps({
                 "UserName": username,
                 "AccessKeyId": access_key_id,
             })
-            sess.post(
-                iam_endpoint,
+            _sess.post(
+                "https://us-east-1.console.aws.amazon.com/iam/api",
                 data=del_payload,
                 headers={
                     "Content-Type": "application/x-amz-json-1.1",

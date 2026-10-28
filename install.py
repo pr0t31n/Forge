@@ -151,13 +151,26 @@ def _rpm_installed(pkg):
         print("  [+] All Python packages already installed.")
 
 
+def install_playwright():
+    """Install Playwright Chromium browser for Console Login support."""
+    try:
+        import playwright
+        print("  [ok] playwright already installed")
+    except ImportError:
+        print("[install] Installing playwright ...")
+        _run([sys.executable, "-m", "pip", "install", "--break-system-packages", "playwright"], check=False)
+    print("[install] Installing Playwright Chromium browser ...")
+    _run([sys.executable, "-m", "playwright", "install", "chromium"], check=False)
+
+
 def main():
     if sys.version_info < MIN_PYTHON:
         print(f"ERROR: Python {'.'.join(map(str, MIN_PYTHON))}+ required")
         sys.exit(1)
-    print(f"{TOOL_NAME} v0.2.0 — Installation")
+    print(f"{TOOL_NAME} — Installation")
     install_system_deps()
     install_pip_deps()
+    install_playwright()
     print(f"\n{TOOL_NAME} installed.")
     print("Start with:")
     print("  python3 forge.py --azure-subscription <sub-id>")
