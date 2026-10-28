@@ -2277,6 +2277,8 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
     # --- FORGE-AWS-220 — VPC EC2 endpoint ---
     _check_pause()
     log("[aws] Checking VPC endpoints...")
+    _vpcs_resp_ep = _aws_run(["ec2", "describe-vpcs"], "ec2_vpcs.json") or {}
+    vpcs = _vpcs_resp_ep.get("Vpcs") or []
     endpoints_resp = _aws_run(["ec2", "describe-vpc-endpoints"], "ec2_vpc_endpoints.json") or {}
     _endpoints = endpoints_resp.get("VpcEndpoints") or []
     _vpc_ep_map = {}
