@@ -362,15 +362,20 @@ def _aws_console_login_browser(console_url, account, username, password):
             + _MANUAL_KEY_STEPS
         )
 
-    _has_stealth = False
+    _stealth_fn = None
     try:
-        from playwright_stealth import stealth_sync
-        _has_stealth = True
-    except ImportError:
-        pass
+        from playwright_stealth import Stealth
+        _s = Stealth()
+        _stealth_fn = _s.apply_stealth_sync
+    except Exception:
+        try:
+            from playwright_stealth import stealth_sync
+            _stealth_fn = stealth_sync
+        except ImportError:
+            pass
 
     log("[aws-console] Lightweight login blocked (HTTP 403) — retrying with headless browser")
-    if _has_stealth:
+    if _stealth_fn:
         log("[aws-console] playwright-stealth available — applying anti-detection")
     else:
         log("[aws-console] playwright-stealth not installed — using basic stealth only")
@@ -408,8 +413,8 @@ def _aws_console_login_browser(console_url, account, username, password):
         )
         page = ctx.new_page()
 
-        if _has_stealth:
-            stealth_sync(page)
+        if _stealth_fn:
+            _stealth_fn(page)
         else:
             ctx.add_init_script("""
                 Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
