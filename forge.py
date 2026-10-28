@@ -1439,13 +1439,15 @@ def _build_aws_intelligence(out_dir: Path, region: str, findings: list,
         rb = _risk_breakdown(sf)
         # count resources from inventory
         n_res = sum(1 for r in inventory if r.get("service") == svc_name)
-        access = "Access Denied" if cli_svc in denied_services else "Allowed"
+        denied = cli_svc in denied_services
+        has_data = bool(sf) or n_res > 0
+        access = "Access Denied" if denied and not has_data else "Allowed"
         if sf:
             st = "Issues Found"
-        elif cli_svc in denied_services:
+        elif denied and not has_data:
             st = "Access Denied"
-        elif n_res == 0 and not sf:
-            st = "No Resources" if access == "Allowed" else "Access Denied"
+        elif n_res == 0:
+            st = "No Resources"
         else:
             st = "OK"
         dashboard.append({
