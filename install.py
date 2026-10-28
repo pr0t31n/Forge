@@ -88,16 +88,6 @@ def install_system_deps():
                 print("  [ok] gcloud already installed")
 
 
-def install_pip_deps():
-    import importlib.util
-    from pathlib import Path
-    req = Path(__file__).parent / "requirements.txt"
-    if not req.exists():
-        print("[install] No requirements.txt found — skipping pip install")
-        return
-    print("[install] Installing Python packages …")
-
-
 def _dpkg_installed(pkg):
     try:
         r = subprocess.run(["dpkg", "-s", pkg],
@@ -117,6 +107,15 @@ def _rpm_installed(pkg):
         return False
 
 
+def install_pip_deps():
+    import importlib.util
+    from pathlib import Path
+    req = Path(__file__).parent / "requirements.txt"
+    if not req.exists():
+        print("[install] No requirements.txt found — skipping pip install")
+        return
+    print("[install] Installing Python packages …")
+
     def _pip_installed(pkg_spec):
         name = pkg_spec.split(">=")[0].split("==")[0].split("[")[0].split("<")[0].strip()
         _IMPORT_MAP = {
@@ -130,6 +129,7 @@ def _rpm_installed(pkg):
             "ruamel.yaml": "ruamel", "lxml-html-clean": "lxml_html_clean",
             "pyserial": "serial", "python-can": "can",
             "python-multipart": "multipart", "graphql-core": "graphql",
+            "playwright-stealth": "playwright_stealth",
         }
         mod = _IMPORT_MAP.get(name, name.replace("-", "_"))
         return importlib.util.find_spec(mod) is not None
