@@ -80,6 +80,211 @@ _DEPRECATED_RUNTIMES = frozenset({
     "java8", "go1.x",
 })
 
+# Temp profile name used when Forge creates ephemeral access keys.
+_AWS_TMP_PROFILE = "forge_tmp"
+_aws_tmp_cleanup = None
+
+
+# ── AWS credential setup ─────────────────────────────────────────────────────
+
+def _aws_configure_from_keys(access_key_id: str, secret_key: str,
+                              region: str = "") -> str:
+    """Write a temp AWS CLI profile from explicit access keys.
+    Returns the profile name.  Registers ``_aws_tmp_cleanup`` to remove it.
+    """
+    global _aws_tmp_cleanup
+    import configparser
+
+    profile = _AWS_TMP_PROFILE
+    creds_file = Path.home() / ".aws" / "credentials"
+    config_file = Path.home() / ".aws" / "config"
+    creds_file.parent.mkdir(parents=True, exist_ok=True)
+
+    cfg = configparser.ConfigParser()
+    if creds_file.exists():
+        cfg.read(str(creds_file))
+    cfg[profile] = {
+        "aws_access_key_id": access_key_id,
+        "aws_secret_access_key": secret_key,
+    }
+    with open(creds_file, "w") as f:
+        cfg.write(f)
+
+    if region:
+        cfg2 = configparser.ConfigParser()
+        if config_file.exists():
+            cfg2.read(str(config_file))
+        section = f"profile {profile}"
+        if not cfg2.has_section(section):
+            cfg2.add_section(section)
+        cfg2.set(section, "region", region)
+        with open(config_file, "w") as f:
+            cfg2.write(f)
+
+    log(f"[aws] Temp profile '{profile}' configured (key {access_key_id[:8]}...)")
+
+    def _cleanup():
+        try:
+            cfg = configparser.ConfigParser()
+            creds = Path.home() / ".aws" / "credentials"
+            if creds.exists():
+                cfg.read(str(creds))
+                if cfg.has_section(profile):
+                    cfg.remove_section(profile)
+                    with open(creds, "w") as f:
+                        cfg.write(f)
+            cfg2 = configparser.ConfigParser()
+            conf = Path.home() / ".aws" / "config"
+            if conf.exists():
+                cfg2.read(str(conf))
+                section = f"profile {profile}"
+                if cfg2.has_section(section):
+                    cfg2.remove_section(section)
+                    with open(conf, "w") as f:
+                        cfg2.write(f)
+            log("[aws] Temp profile removed from ~/.aws/")
+        except Exception as exc:
+            err(f"[aws] Profile cleanup warning: {exc}")
+
+    _aws_tmp_cleanup = _cleanup
+    return profile
+
+
+def _parse_account_from_url(url: str) -> str:
+    """Extract account ID or alias from an IAM sign-in URL."""
+    import urllib.parse
+    parsed = urllib.parse.urlparse(url)
+    host = parsed.hostname or ""
+    parts = host.split(".")
+    if parts and parts[0] not in ("signin", "console", ""):
+        return parts[0]
+    return ""
+
+
+def _aws_console_login(console_url: str, username: str, password: str,
+                        region: str = "") -> str:
+    """Log into the AWS Console, create a temp access key, configure a CLI
+    profile and return the profile name.
+
+    On failure raises RuntimeError with a user-friendly message.
+    """
+    global _aws_tmp_cleanup
+    import configparser
+    try:
+        import requests as _req
+    except ImportError:
+        raise RuntimeError("requests library required for console login — pip install requests")
+
+    account = _parse_account_from_url(console_url)
+    if not account:
+        raise RuntimeError(f"Cannot extract account ID/alias from URL: {console_url}")
+    log(f"[aws-console] Account: {account}, user: {username}")
+    status("aws-console", "AWS Console Login", "running")
+
+    signin_url = "https://signin.aws.amazon.com/signin"
+    sess = _req.Session()
+    sess.headers["User-Agent"] = (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    )
+
+    try:
+        sess.get(console_url, timeout=30, allow_redirects=True)
+    except Exception as exc:
+        raise RuntimeError(f"Cannot reach {console_url}: {exc}")
+
+    form_data = {
+        "action": "iam-user-authentication",
+        "account": account,
+        "username": username,
+        "password": password,
+        "client_id": "arn:aws:signin:::console/canvas",
+        "redirect_uri": "https://console.aws.amazon.com/console/home",
+    }
+
+    try:
+        login_resp = sess.post(signin_url, data=form_data, timeout=30,
+                               allow_redirects=True)
+    except Exception as exc:
+        raise RuntimeError(f"Console login request failed: {exc}")
+
+    body = login_resp.text.lower()
+    if "captcha" in body:
+        raise RuntimeError("AWS sign-in requires CAPTCHA — create access keys manually via the Console")
+    if "mfatype" in body or "mfa_serial" in body:
+        raise RuntimeError("AWS sign-in requires MFA — create access keys manually or use --aws-profile")
+    if "iam_user_authentication_failure" in body or "authentication_failed" in body:
+        raise RuntimeError("AWS Console login failed — check URL, username and password")
+    if login_resp.status_code not in (200, 301, 302, 303):
+        raise RuntimeError(f"AWS Console login returned HTTP {login_resp.status_code}")
+
+    log("[aws-console] Console login successful — creating temp access key")
+
+    iam_endpoint = "https://us-east-1.console.aws.amazon.com/iam/api"
+    create_payload = json.dumps({"UserName": username})
+
+    try:
+        key_resp = sess.post(
+            iam_endpoint,
+            data=create_payload,
+            headers={
+                "Content-Type": "application/x-amz-json-1.1",
+                "X-Amz-Target": "AWSIdentityManagementService.CreateAccessKey",
+            },
+            timeout=30,
+        )
+        key_data = key_resp.json()
+    except Exception as exc:
+        raise RuntimeError(
+            f"Failed to create access key via Console: {exc}\n"
+            "Create access keys manually: Console → IAM → Users → Security credentials → Create access key"
+        )
+
+    ak = key_data.get("CreateAccessKeyResponse", {}).get("CreateAccessKeyResult", {}).get("AccessKey", {})
+    if not ak:
+        ak = key_data.get("AccessKey", {})
+    access_key_id = ak.get("AccessKeyId", "")
+    secret_key = ak.get("SecretAccessKey", "")
+    if not access_key_id or not secret_key:
+        raise RuntimeError(
+            "Console did not return access keys — the sign-in endpoint may have changed.\n"
+            "Create them manually: Console → IAM → Users → Security credentials → Create access key,\n"
+            "then pass them via --aws-access-key-id and --aws-secret-key"
+        )
+
+    log(f"[aws-console] Temporary access key created: {access_key_id[:8]}...")
+
+    profile = _aws_configure_from_keys(access_key_id, secret_key, region)
+
+    # Override cleanup to also delete the remote key
+    base_cleanup = _aws_tmp_cleanup
+
+    def _full_cleanup():
+        log("[aws-console] Cleaning up temporary access key...")
+        try:
+            del_payload = json.dumps({
+                "UserName": username,
+                "AccessKeyId": access_key_id,
+            })
+            sess.post(
+                iam_endpoint,
+                data=del_payload,
+                headers={
+                    "Content-Type": "application/x-amz-json-1.1",
+                    "X-Amz-Target": "AWSIdentityManagementService.DeleteAccessKey",
+                },
+                timeout=15,
+            )
+            log(f"[aws-console] Deleted temp access key {access_key_id[:8]}...")
+        except Exception as exc:
+            err(f"[aws-console] Could not auto-delete temp key {access_key_id[:8]}... — delete it manually in IAM: {exc}")
+        if base_cleanup:
+            base_cleanup()
+
+    _aws_tmp_cleanup = _full_cleanup
+    status("aws-console", "AWS Console Login", "complete")
+    return profile
+
 
 def _check_pause():
     if _pause is not None and _pause.check_and_pause():
@@ -1660,6 +1865,16 @@ def main() -> int:
     parser.add_argument("--gcp-project", help="GCP project ID to audit")
     parser.add_argument("--aws-profile", default="", help="AWS CLI profile name (default: default profile)")
     parser.add_argument("--aws-region", default="", help="AWS region (leave blank for default region)")
+    parser.add_argument("--aws-access-key-id", default="",
+                        help="AWS access key ID (overrides --aws-profile; prefer env FORGE_AWS_ACCESS_KEY_ID)")
+    parser.add_argument("--aws-secret-key", default="",
+                        help="AWS secret access key (prefer env FORGE_AWS_SECRET_KEY)")
+    parser.add_argument("--aws-console-url", default="",
+                        help="IAM sign-in URL (e.g. https://123456789012.signin.aws.amazon.com/console)")
+    parser.add_argument("--aws-console-user", default="",
+                        help="IAM username for console login")
+    parser.add_argument("--aws-console-pass", default="",
+                        help="IAM password for console login (prefer env FORGE_AWS_CONSOLE_PASS)")
     parser.add_argument("--client-short", default="default", help="Short client identifier")
     parser.add_argument("--client-name", default="", help="Full client name (defaults to --client-short)")
     parser.add_argument("--engagement-name", default="forge run", help="Engagement name for meta.json")
@@ -1671,9 +1886,18 @@ def main() -> int:
         print(VERSION)
         return 0
 
-    has_aws = args.aws_profile or args.aws_region
+    # Resolve AWS credentials from env vars (preferred for secrets) or CLI args
+    aws_access_key = os.environ.get("FORGE_AWS_ACCESS_KEY_ID", "") or args.aws_access_key_id
+    aws_secret_key = os.environ.get("FORGE_AWS_SECRET_KEY", "") or args.aws_secret_key
+    aws_console_url = os.environ.get("FORGE_AWS_CONSOLE_URL", "") or args.aws_console_url
+    aws_console_user = os.environ.get("FORGE_AWS_CONSOLE_USER", "") or args.aws_console_user
+    aws_console_pass = os.environ.get("FORGE_AWS_CONSOLE_PASS", "") or args.aws_console_pass
+
+    has_aws_keys = aws_access_key and aws_secret_key
+    has_aws_console = aws_console_url and aws_console_user and aws_console_pass
+    has_aws = args.aws_profile or args.aws_region or has_aws_keys or has_aws_console
     if not (args.azure_subscription or args.gcp_project or has_aws):
-        parser.error("provide at least one of --azure-subscription / --gcp-project / --aws-profile / --aws-region")
+        parser.error("provide at least one of --azure-subscription / --gcp-project / --aws-profile / --aws-region / --aws-access-key-id")
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     if args.project:
@@ -1709,7 +1933,12 @@ def main() -> int:
     if args.gcp_project:
         clouds.append(f"GCP (project={args.gcp_project})")
     if has_aws or (not args.azure_subscription and not args.gcp_project):
-        clouds.append(f"AWS (profile={args.aws_profile or 'default'}, region={args.aws_region or 'default'})")
+        auth_method = "profile"
+        if has_aws_keys:
+            auth_method = "access-keys"
+        elif has_aws_console:
+            auth_method = "console-login"
+        clouds.append(f"AWS (auth={auth_method}, region={args.aws_region or 'default'})")
     log(f"Forge v{VERSION} starting — project: {project_dir}")
     log(f"Cloud targets: {', '.join(clouds)}")
     if _us is not None:
@@ -1739,7 +1968,32 @@ def main() -> int:
         audit_gcp(args.gcp_project, project_dir)
     _check_pause()
     if has_aws or (not args.azure_subscription and not args.gcp_project):
-        audit_aws(args.aws_profile, args.aws_region, project_dir)
+        aws_profile = args.aws_profile
+        # Priority: explicit keys > console login > named profile
+        if has_aws_keys:
+            log("[aws] Configuring from provided access keys")
+            aws_profile = _aws_configure_from_keys(aws_access_key, aws_secret_key, args.aws_region)
+        elif has_aws_console:
+            log("[aws] Attempting AWS Console login to create temp access key...")
+            try:
+                aws_profile = _aws_console_login(
+                    aws_console_url, aws_console_user, aws_console_pass,
+                    region=args.aws_region)
+            except RuntimeError as exc:
+                err(f"[aws-console] {exc}")
+                if not aws_profile:
+                    err("[aws] No fallback profile — skipping AWS audit")
+                    status("aws", "AWS Account Audit", "skipped")
+                    aws_profile = None
+        if aws_profile is not None:
+            audit_aws(aws_profile, args.aws_region, project_dir)
+
+    # Cleanup temp AWS credentials
+    if _aws_tmp_cleanup:
+        try:
+            _aws_tmp_cleanup()
+        except Exception as exc:
+            err(f"[aws] Credential cleanup: {exc}")
 
     ended_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
