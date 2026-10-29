@@ -2720,8 +2720,13 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
                 pol_doc = json.loads(pol_doc)
             except (json.JSONDecodeError, TypeError):
                 pol_doc = {}
-        for stmt in (pol_doc.get("Statement") or []):
-            if stmt.get("Effect") != "Allow":
+        _stmts = pol_doc.get("Statement") or []
+        if isinstance(_stmts, dict):
+            _stmts = [_stmts]
+        elif not isinstance(_stmts, list):
+            _stmts = []
+        for stmt in _stmts:
+            if not isinstance(stmt, dict) or stmt.get("Effect") != "Allow":
                 continue
             actions = stmt.get("Action", [])
             if isinstance(actions, str):
