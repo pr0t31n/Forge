@@ -1588,6 +1588,14 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
             err(f"aws {' '.join(args[:2])} failed: {exc}")
             return None
 
+    def _normalize_stmts(doc: dict, key: str = "Statement") -> list:
+        raw = doc.get(key) or []
+        if isinstance(raw, dict):
+            return [raw]
+        if not isinstance(raw, list):
+            return []
+        return [s for s in raw if isinstance(s, dict)]
+
     # ── Resolve account ID (needed for s3control, etc.) ─────────────────────
     _aws_account_id = ""
     _sts_resp = _aws_run(["sts", "get-caller-identity"], "sts_identity.json", use_region=False)
@@ -1766,7 +1774,7 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
         if bp_resp and bp_resp.get("Policy"):
             try:
                 pol_doc = json.loads(bp_resp["Policy"])
-                for stmt in pol_doc.get("Statement") or []:
+                for stmt in _normalize_stmts(pol_doc):
                     # Cross-account check
                     principal = stmt.get("Principal", "")
                     p_aws = principal.get("AWS", []) if isinstance(principal, dict) else []
@@ -2325,7 +2333,7 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
         if ep_policy:
             try:
                 pol_doc = json.loads(ep_policy) if isinstance(ep_policy, str) else ep_policy
-                for stmt in pol_doc.get("Statement") or []:
+                for stmt in _normalize_stmts(pol_doc):
                     principal = stmt.get("Principal", "")
                     if principal == "*" and not (stmt.get("Condition") or {}):
                         log(f"[aws] VPC endpoint {ep_id} — allows Principal=* without condition (HIGH)")
@@ -2617,7 +2625,7 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
 
             # FORGE-AWS-235: Cross-account ReadOnlyAccess
             if rpol_name == "ReadOnlyAccess":
-                for stmt in (trust_doc.get("Statement") or []):
+                for stmt in _normalize_stmts(trust_doc):
                     principal = stmt.get("Principal", {})
                     p_aws = principal.get("AWS", []) if isinstance(principal, dict) else []
                     if isinstance(p_aws, str):
@@ -2634,7 +2642,7 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
                             break
 
         # FORGE-AWS-236: Confused deputy prevention for service roles
-        for stmt in (trust_doc.get("Statement") or []):
+        for stmt in _normalize_stmts(trust_doc):
             principal = stmt.get("Principal", {})
             p_svc = principal.get("Service", []) if isinstance(principal, dict) else []
             if isinstance(p_svc, str):
@@ -2720,13 +2728,8 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
                 pol_doc = json.loads(pol_doc)
             except (json.JSONDecodeError, TypeError):
                 pol_doc = {}
-        _stmts = pol_doc.get("Statement") or []
-        if isinstance(_stmts, dict):
-            _stmts = [_stmts]
-        elif not isinstance(_stmts, list):
-            _stmts = []
-        for stmt in _stmts:
-            if not isinstance(stmt, dict) or stmt.get("Effect") != "Allow":
+        for stmt in _normalize_stmts(pol_doc):
+            if stmt.get("Effect") != "Allow":
                 continue
             actions = stmt.get("Action", [])
             if isinstance(actions, str):
@@ -2818,7 +2821,7 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
                 pd = json.loads(pd)
             except (json.JSONDecodeError, TypeError):
                 pd = {}
-        for stmt in (pd.get("Statement") or []):
+        for stmt in _normalize_stmts(pd):
             if stmt.get("Effect") != "Allow":
                 continue
             actions = stmt.get("Action", [])
@@ -3205,7 +3208,7 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
         if policy_resp:
             try:
                 pol_doc = json.loads(policy_resp.get("Policy", "{}"))
-                for stmt in pol_doc.get("Statement") or []:
+                for stmt in _normalize_stmts(pol_doc):
                     principal = stmt.get("Principal", "")
                     condition = stmt.get("Condition") or {}
                     if principal == "*" and not condition:
@@ -3531,7 +3534,7 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
         if pol_resp:
             try:
                 pol_doc = json.loads(pol_resp.get("Policy", "{}"))
-                for stmt in pol_doc.get("Statement") or []:
+                for stmt in _normalize_stmts(pol_doc):
                     principal = stmt.get("Principal", "")
                     p_aws = principal.get("AWS", "") if isinstance(principal, dict) else principal
                     if p_aws == "*":
@@ -3585,7 +3588,7 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
         if policy_str:
             try:
                 pol_doc = json.loads(policy_str)
-                for stmt in pol_doc.get("Statement") or []:
+                for stmt in _normalize_stmts(pol_doc):
                     principal = stmt.get("Principal", "")
                     p_val = principal.get("AWS", "") if isinstance(principal, dict) else principal
                     condition = stmt.get("Condition") or {}
@@ -3639,7 +3642,7 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
         if policy_str:
             try:
                 pol_doc = json.loads(policy_str)
-                for stmt in pol_doc.get("Statement") or []:
+                for stmt in _normalize_stmts(pol_doc):
                     principal = stmt.get("Principal", "")
                     p_val = principal.get("AWS", "") if isinstance(principal, dict) else principal
                     condition = stmt.get("Condition") or {}
@@ -4096,7 +4099,7 @@ def audit_aws(profile: str, region: str, output_dir: Path) -> None:
         if _srp:
             try:
                 _srp_doc = json.loads(_srp)
-                for _stmt in _srp_doc.get("Statement") or []:
+                for _stmt in _normalize_stmts(_srp_doc):
                     _p = _stmt.get("Principal", "")
                     _p_val = _p.get("AWS", "") if isinstance(_p, dict) else _p
                     if _p_val == "*" and not (_stmt.get("Condition") or {}):
