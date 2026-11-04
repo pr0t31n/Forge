@@ -74,7 +74,7 @@ provider JSON dump **and** its `.log` sibling, run-dir-relative (§14i).
 ## Token protocol
 
 When `FORGE_MANAGED=1` is set in the environment Forge emits the
-canonical Vantage-style token stream so it can be wrapped by a Flask
+canonical Crucible-style token stream so it can be wrapped by a Flask
 manager:
 
 ```
