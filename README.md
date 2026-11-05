@@ -135,8 +135,8 @@ canonical Crucible-style token stream so it can be wrapped by a Flask
 manager:
 
 ```
-__VANTAGE_LOG__:<message>
-__VANTAGE_ERR__:<message>
-__VANTAGE_STATUS__:<json>
-__VANTAGE_FINDING__:<json>
+__CRUCIBLE_LOG__:<message>
+__CRUCIBLE_ERR__:<message>
+__CRUCIBLE_STATUS__:<json>
+__CRUCIBLE_FINDING__:<json>
 ```
