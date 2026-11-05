@@ -5,6 +5,9 @@ insecure defaults and over-privileged access. Findings emit in the
 universal pr0t31n schema (v1.1) so Crucible/Prometheus consume them
 directly.
 
+
+> **[View full documentation on the Codex Wiki](https://wiki.pr0t31n.com/tools/forge)** — detailed features, CLI reference, findings catalogue, and integration guides.
+
 ## Coverage (v1.10.0)
 
 | Provider | Resource          | Checks |
