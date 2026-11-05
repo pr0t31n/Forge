@@ -5,16 +5,18 @@ insecure defaults and over-privileged access. Findings emit in the
 universal pr0t31n schema (v1.1) so Crucible/Prometheus consume them
 directly.
 
-## Coverage (v0.3.0)
+## Coverage (v1.10.0)
 
 | Provider | Resource          | Checks |
 |----------|-------------------|--------|
 | Azure    | Storage Accounts  | HTTPS-only, default-action ACL |
 | Azure    | Key Vaults        | Soft-delete, purge-protection |
 | Azure    | VMs               | OS disk encryption |
+| Azure    | OpenAI Service    | Public network access, content filtering, diagnostic logging, managed identity, CMK |
 | GCP      | GCS buckets       | Uniform bucket-level access |
 | GCP      | Compute instances | Default service account, public IP |
 | GCP      | Project IAM       | Project-level owner/editor bindings |
+| GCP      | Vertex AI         | VPC peering, public endpoints, model monitoring, audit logging, notebook public IP, Feature Store CMEK |
 
 ## Requirements
 
@@ -60,11 +62,18 @@ Run directories follow the pr0t31n universal structure (CLAUDE.md §13):
 ├── azure/
 │   ├── storage_accounts.json    # + storage_accounts.json.log (§14 tool .log)
 │   ├── keyvaults.json           # + .json.log
-│   └── vms.json                 # + .json.log
+│   ├── vms.json                 # + .json.log
+│   ├── openai_accounts.json     # Azure OpenAI service accounts
+│   ├── openai_*_deployments.json    # per-account deployment details
+│   └── openai_*_diagnostics.json    # per-account diagnostic settings
 └── gcp/
     ├── buckets.json             # + .json.log
     ├── instances.json           # + .json.log
-    └── iam_policy.json          # + .json.log
+    ├── iam_policy.json          # + .json.log
+    ├── vertex_ai_endpoints.json     # Vertex AI model endpoints
+    ├── vertex_ai_monitoring.json    # monitoring jobs
+    ├── vertex_ai_notebooks.json     # Workbench notebooks
+    └── vertex_ai_featurestores.json # Feature Store instances
 ```
 
 Each `az`/`gcloud` invocation emits a `<output>.json.log` sibling (§14 via

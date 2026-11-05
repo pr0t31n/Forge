@@ -3522,6 +3522,665 @@
       "remediation_effort": "Easy",
       "validation_tools": [],
       "category": "Scope Limitations"
+    },
+    {
+      "id": "FORGE-GCP-501",
+      "title": "Vertex AI: Model endpoint not using VPC peering: {endpoint}",
+      "aliases": [
+        "Vertex AI Model Not Using VPC Peering"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "MEDIUM",
+      "description": "Vertex AI model endpoint is not configured with VPC peering for private connectivity. Inference traffic traverses public Google APIs instead of remaining within a private network boundary.",
+      "impact": "An attacker with network visibility can intercept or observe model inference requests and responses transiting public APIs. Sensitive prompts, model inputs, and prediction outputs may be exposed.",
+      "cwe": [
+        "CWE-319"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 5.3,
+      "cvss_vector": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:N/A:N",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "",
+      "owasp_api": "",
+      "nist_csf2": [
+        "PR.DS-02"
+      ],
+      "nist_800_53": [
+        "SC-8"
+      ],
+      "nist_800_171": [
+        "3.13.8"
+      ],
+      "pci_dss_4": [
+        "4.2.1"
+      ],
+      "iso_27001": [
+        "A.13.1.1"
+      ],
+      "iso_27002": [],
+      "soc2": [
+        "CC6.7"
+      ],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [
+        {
+          "technique": "T1040",
+          "tactic": "Credential Access",
+          "name": "Network Sniffing"
+        }
+      ],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "Configure VPC peering or Private Service Connect on the Vertex AI endpoint to keep model traffic within a private network.",
+      "remediation_effort": "Moderate",
+      "remediation_component": "Network",
+      "remediation_category": "Network Segmentation",
+      "validation_tools": [
+        "gcloud"
+      ]
+    },
+    {
+      "id": "FORGE-GCP-502",
+      "title": "Vertex AI: Endpoint public access enabled: {endpoint}",
+      "aliases": [
+        "Vertex AI Endpoint Public Access Enabled"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "HIGH",
+      "description": "Vertex AI endpoint allows public internet access without VPC peering or Private Service Connect. Model inference requests are reachable from any network.",
+      "impact": "An attacker can send inference requests to the publicly accessible endpoint, potentially abusing the model for prompt injection, data exfiltration through crafted inputs, or running up compute costs via denial-of-wallet attacks.",
+      "cwe": [
+        "CWE-284"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 7.5,
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "",
+      "owasp_api": "",
+      "nist_csf2": [
+        "PR.AC-05"
+      ],
+      "nist_800_53": [
+        "AC-3",
+        "SC-7"
+      ],
+      "nist_800_171": [
+        "3.1.3",
+        "3.13.5"
+      ],
+      "pci_dss_4": [
+        "1.3.1"
+      ],
+      "iso_27001": [
+        "A.13.1.1"
+      ],
+      "iso_27002": [],
+      "soc2": [
+        "CC6.1",
+        "CC6.6"
+      ],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [
+        {
+          "technique": "T1190",
+          "tactic": "Initial Access",
+          "name": "Exploit Public-Facing Application"
+        }
+      ],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "Restrict the Vertex AI endpoint to private access via VPC peering or Private Service Connect. Deny public internet connectivity.",
+      "remediation_effort": "Moderate",
+      "remediation_component": "Network",
+      "remediation_category": "Network Segmentation",
+      "validation_tools": [
+        "gcloud"
+      ]
+    },
+    {
+      "id": "FORGE-GCP-503",
+      "title": "Vertex AI: Model monitoring not configured",
+      "aliases": [
+        "Vertex AI Model Monitoring Not Configured"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "MEDIUM",
+      "description": "No Vertex AI model monitoring jobs exist. Without monitoring, data drift, prediction drift, and feature attribution skew go undetected.",
+      "impact": "Model quality degrades silently over time. An attacker who poisons training data or manipulates inputs can cause biased or incorrect predictions without triggering any alert. Compliance frameworks requiring model governance are unsatisfied.",
+      "cwe": [
+        "CWE-778"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 4.3,
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:L/A:N",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "",
+      "owasp_api": "",
+      "nist_csf2": [
+        "DE.CM-07"
+      ],
+      "nist_800_53": [
+        "SI-4"
+      ],
+      "nist_800_171": [],
+      "pci_dss_4": [],
+      "iso_27001": [
+        "A.12.4.1"
+      ],
+      "iso_27002": [],
+      "soc2": [
+        "CC7.2"
+      ],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "Create a Vertex AI Model Monitoring job to detect drift, skew, and anomalies in model predictions.",
+      "remediation_effort": "Moderate",
+      "remediation_component": "Application",
+      "remediation_category": "Monitoring",
+      "validation_tools": [
+        "gcloud"
+      ]
+    },
+    {
+      "id": "FORGE-GCP-504",
+      "title": "Vertex AI: Pipeline logging disabled",
+      "aliases": [
+        "Vertex AI Pipeline Logging Disabled"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "MEDIUM",
+      "description": "Cloud Audit Logs are not explicitly configured for Vertex AI (aiplatform.googleapis.com). Pipeline executions, model deployments, and prediction requests may not be auditable.",
+      "impact": "Without audit logs, unauthorized model access, data exfiltration through predictions, or pipeline tampering leave no forensic trail. Incident response and compliance evidence gathering are impaired.",
+      "cwe": [
+        "CWE-778"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 5.3,
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:N/A:N",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "",
+      "owasp_api": "",
+      "nist_csf2": [
+        "DE.AE-03"
+      ],
+      "nist_800_53": [
+        "AU-2",
+        "AU-3",
+        "AU-12"
+      ],
+      "nist_800_171": [
+        "3.3.1",
+        "3.3.2"
+      ],
+      "pci_dss_4": [
+        "10.2.1"
+      ],
+      "iso_27001": [
+        "A.12.4.1"
+      ],
+      "iso_27002": [],
+      "soc2": [
+        "CC7.2"
+      ],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [
+        {
+          "technique": "T1562.008",
+          "tactic": "Defense Evasion",
+          "name": "Disable or Modify Cloud Logs"
+        }
+      ],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "Enable Cloud Audit Logs for aiplatform.googleapis.com with DATA_READ and DATA_WRITE log types.",
+      "remediation_effort": "Easy",
+      "remediation_component": "Configuration",
+      "remediation_category": "Monitoring",
+      "validation_tools": [
+        "gcloud"
+      ]
+    },
+    {
+      "id": "FORGE-GCP-505",
+      "title": "Vertex AI: Workbench notebook has public IP: {notebook}",
+      "aliases": [
+        "Vertex AI Workbench Notebook Public IP"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "HIGH",
+      "description": "Vertex AI Workbench managed notebook has an external IP address. Notebooks contain code, credentials, and data; public exposure increases the attack surface.",
+      "impact": "An attacker can target the notebook directly from the internet. Exposed Jupyter endpoints may allow unauthenticated code execution, credential theft, or lateral movement into the GCP project.",
+      "cwe": [
+        "CWE-284"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 8.1,
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "",
+      "owasp_api": "",
+      "nist_csf2": [
+        "PR.AC-05"
+      ],
+      "nist_800_53": [
+        "SC-7",
+        "AC-3"
+      ],
+      "nist_800_171": [
+        "3.13.5"
+      ],
+      "pci_dss_4": [
+        "1.3.1"
+      ],
+      "iso_27001": [
+        "A.13.1.1"
+      ],
+      "iso_27002": [],
+      "soc2": [
+        "CC6.1",
+        "CC6.6"
+      ],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [
+        {
+          "technique": "T1190",
+          "tactic": "Initial Access",
+          "name": "Exploit Public-Facing Application"
+        }
+      ],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "Recreate the notebook with --no-public-ip or configure Private Google Access on the subnet.",
+      "remediation_effort": "Moderate",
+      "remediation_component": "Network",
+      "remediation_category": "Network Segmentation",
+      "validation_tools": [
+        "gcloud"
+      ]
+    },
+    {
+      "id": "FORGE-GCP-506",
+      "title": "Vertex AI: Feature Store no CMEK: {featurestore}",
+      "aliases": [
+        "Vertex AI Feature Store No Encryption"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "MEDIUM",
+      "description": "Vertex AI Feature Store does not use a customer-managed encryption key (CMEK). Data is encrypted with Google-managed keys only, reducing control over key rotation and access.",
+      "impact": "The organization cannot enforce its own key rotation schedule, revoke keys independently of Google, or meet regulatory requirements mandating customer-controlled encryption. A compromised Google-managed key exposes feature data.",
+      "cwe": [
+        "CWE-311"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 4.0,
+      "cvss_vector": "CVSS:3.1/AV:N/AC:H/PR:H/UI:N/S:U/C:H/I:N/A:N",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "",
+      "owasp_api": "",
+      "nist_csf2": [
+        "PR.DS-01"
+      ],
+      "nist_800_53": [
+        "SC-12",
+        "SC-28"
+      ],
+      "nist_800_171": [
+        "3.13.10"
+      ],
+      "pci_dss_4": [
+        "3.5.1"
+      ],
+      "iso_27001": [
+        "A.10.1.1"
+      ],
+      "iso_27002": [],
+      "soc2": [
+        "CC6.1"
+      ],
+      "hitrust": [],
+      "gdpr": [
+        "Art. 32"
+      ],
+      "mitre_attack": [],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "Recreate the Feature Store with --encryption-spec-kms-key-name pointing to a Cloud KMS key you manage.",
+      "remediation_effort": "Significant",
+      "remediation_component": "Configuration",
+      "remediation_category": "Cryptography",
+      "validation_tools": [
+        "gcloud"
+      ]
+    },
+    {
+      "id": "FORGE-AZ-501",
+      "title": "Azure OpenAI: Public network access enabled: {account}",
+      "aliases": [
+        "Azure OpenAI Public Network Access Enabled"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "HIGH",
+      "description": "Azure OpenAI service has public network access enabled with no network ACL restriction. Model endpoints are reachable from the public internet.",
+      "impact": "An attacker can send requests to the public API endpoint using stolen or leaked API keys. This enables prompt injection attacks, model abuse, data exfiltration through crafted prompts, and denial-of-wallet via compute exhaustion.",
+      "cwe": [
+        "CWE-284"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 7.5,
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "",
+      "owasp_api": "",
+      "nist_csf2": [
+        "PR.AC-05"
+      ],
+      "nist_800_53": [
+        "AC-3",
+        "SC-7"
+      ],
+      "nist_800_171": [
+        "3.1.3",
+        "3.13.5"
+      ],
+      "pci_dss_4": [
+        "1.3.1"
+      ],
+      "iso_27001": [
+        "A.13.1.1"
+      ],
+      "iso_27002": [],
+      "soc2": [
+        "CC6.1",
+        "CC6.6"
+      ],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [
+        {
+          "technique": "T1190",
+          "tactic": "Initial Access",
+          "name": "Exploit Public-Facing Application"
+        }
+      ],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "Disable public network access or set network ACL default action to Deny with explicit IP/VNet allow rules.",
+      "remediation_effort": "Moderate",
+      "remediation_component": "Network",
+      "remediation_category": "Network Segmentation",
+      "validation_tools": [
+        "az"
+      ]
+    },
+    {
+      "id": "FORGE-AZ-502",
+      "title": "Azure OpenAI: Content filtering not configured: {account}",
+      "aliases": [
+        "Azure OpenAI Content Filtering Not Configured"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "MEDIUM",
+      "description": "Azure OpenAI deployment(s) do not have a content filtering (RAI) policy attached. Prompts and completions are not screened for harmful content.",
+      "impact": "Without content filtering, the model can generate or accept harmful, biased, or inappropriate content. This exposes the organization to reputational risk, regulatory non-compliance, and potential legal liability.",
+      "cwe": [
+        "CWE-20"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 5.3,
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:L/A:N",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "",
+      "owasp_api": "",
+      "nist_csf2": [
+        "PR.DS-06"
+      ],
+      "nist_800_53": [
+        "SI-10"
+      ],
+      "nist_800_171": [],
+      "pci_dss_4": [],
+      "iso_27001": [],
+      "iso_27002": [],
+      "soc2": [
+        "CC7.2"
+      ],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "Assign a content filter policy to each Azure OpenAI deployment via Azure AI Studio or the REST API.",
+      "remediation_effort": "Easy",
+      "remediation_component": "Application",
+      "remediation_category": "Input Validation",
+      "validation_tools": [
+        "az"
+      ]
+    },
+    {
+      "id": "FORGE-AZ-503",
+      "title": "Azure OpenAI: Diagnostic logging disabled: {account}",
+      "aliases": [
+        "Azure OpenAI Diagnostic Logging Disabled"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "MEDIUM",
+      "description": "Azure OpenAI account has no diagnostic settings configured. API calls, content filtering events, and operational metrics are not being logged for audit or incident response.",
+      "impact": "Without diagnostic logging, unauthorized API usage, prompt injection attempts, and content filter bypasses leave no audit trail. Incident response is blind and compliance with logging requirements (PCI DSS 10, SOC 2 CC7) is unmet.",
+      "cwe": [
+        "CWE-778"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 5.3,
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:N/A:N",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "",
+      "owasp_api": "",
+      "nist_csf2": [
+        "DE.AE-03"
+      ],
+      "nist_800_53": [
+        "AU-2",
+        "AU-3",
+        "AU-12"
+      ],
+      "nist_800_171": [
+        "3.3.1",
+        "3.3.2"
+      ],
+      "pci_dss_4": [
+        "10.2.1"
+      ],
+      "iso_27001": [
+        "A.12.4.1"
+      ],
+      "iso_27002": [],
+      "soc2": [
+        "CC7.2"
+      ],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [
+        {
+          "technique": "T1562.008",
+          "tactic": "Defense Evasion",
+          "name": "Disable or Modify Cloud Logs"
+        }
+      ],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "Create a diagnostic setting to send Azure OpenAI logs to Log Analytics workspace, Storage Account, or Event Hub.",
+      "remediation_effort": "Easy",
+      "remediation_component": "Configuration",
+      "remediation_category": "Monitoring",
+      "validation_tools": [
+        "az"
+      ]
+    },
+    {
+      "id": "FORGE-AZ-504",
+      "title": "Azure OpenAI: Managed identity not used: {account}",
+      "aliases": [
+        "Azure OpenAI Managed Identity Not Used"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "MEDIUM",
+      "description": "Azure OpenAI account does not use a managed identity (system-assigned or user-assigned). Authentication relies on API keys, which can be leaked, shared, or difficult to rotate.",
+      "impact": "API key-based auth cannot be scoped per caller, audited at identity granularity, or automatically rotated. Leaked keys grant full access to all model deployments until manually regenerated.",
+      "cwe": [
+        "CWE-798"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 5.3,
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "",
+      "owasp_api": "",
+      "nist_csf2": [
+        "PR.AC-01"
+      ],
+      "nist_800_53": [
+        "IA-2",
+        "IA-5"
+      ],
+      "nist_800_171": [
+        "3.5.1",
+        "3.5.2"
+      ],
+      "pci_dss_4": [
+        "8.3.1"
+      ],
+      "iso_27001": [
+        "A.9.2.1"
+      ],
+      "iso_27002": [],
+      "soc2": [
+        "CC6.1"
+      ],
+      "hitrust": [],
+      "gdpr": [],
+      "mitre_attack": [
+        {
+          "technique": "T1078.004",
+          "tactic": "Persistence",
+          "name": "Cloud Accounts"
+        }
+      ],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "Enable a system-assigned or user-assigned managed identity and use Azure RBAC for authentication instead of API keys.",
+      "remediation_effort": "Moderate",
+      "remediation_component": "Authentication",
+      "remediation_category": "Access Control",
+      "validation_tools": [
+        "az"
+      ]
+    },
+    {
+      "id": "FORGE-AZ-505",
+      "title": "Azure OpenAI: Customer-managed key not configured: {account}",
+      "aliases": [
+        "Azure OpenAI Customer-Managed Key Not Configured"
+      ],
+      "source_tools": [
+        "forge"
+      ],
+      "risk": "LOW",
+      "description": "Azure OpenAI account does not use a customer-managed key (CMK) for encryption at rest. Data is encrypted with Microsoft-managed keys, reducing customer control over key lifecycle and access policies.",
+      "impact": "The organization cannot enforce its own key rotation, revocation, or access logging policies. Regulatory requirements mandating customer-controlled encryption (PCI DSS 3.5, NIST SC-12) may be unmet.",
+      "cwe": [
+        "CWE-311"
+      ],
+      "cve_examples": [],
+      "cvss_v3_base": 3.0,
+      "cvss_vector": "CVSS:3.1/AV:N/AC:H/PR:H/UI:N/S:U/C:L/I:N/A:N",
+      "nessus_plugin_ids": [],
+      "qualys_qids": [],
+      "owasp_web": "",
+      "owasp_api": "",
+      "nist_csf2": [
+        "PR.DS-01"
+      ],
+      "nist_800_53": [
+        "SC-12",
+        "SC-28"
+      ],
+      "nist_800_171": [
+        "3.13.10"
+      ],
+      "pci_dss_4": [
+        "3.5.1"
+      ],
+      "iso_27001": [
+        "A.10.1.1"
+      ],
+      "iso_27002": [],
+      "soc2": [
+        "CC6.1"
+      ],
+      "hitrust": [],
+      "gdpr": [
+        "Art. 32"
+      ],
+      "mitre_attack": [],
+      "searchsploit_terms": [],
+      "metasploit_modules": [],
+      "kev": false,
+      "remediation_brief": "Configure a customer-managed key from Azure Key Vault for the Cognitive Services account encryption.",
+      "remediation_effort": "Significant",
+      "remediation_component": "Configuration",
+      "remediation_category": "Cryptography",
+      "validation_tools": [
+        "az"
+      ]
     }
   ]
 }

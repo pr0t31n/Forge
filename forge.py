@@ -1123,6 +1123,131 @@ def audit_azure(subscription_id: str, output_dir: Path) -> None:
         else:
             log(f"[azure] {name} — disk encryption OK")
 
+    # ── Azure OpenAI ──────────────────────────────────────────────────────────
+    _check_pause()
+    _save_checkpoint()
+    log("[azure] Starting Azure OpenAI audit...")
+    status("azure", "Azure OpenAI audit", "running")
+
+    # List Cognitive Services accounts filtered to kind==OpenAI
+    _aoai_accounts = _az_run(["cognitiveservices", "account", "list",
+                               "--query", "[?kind=='OpenAI']"],
+                              "openai_accounts.json") or []
+    log(f"[azure] Found {len(_aoai_accounts)} Azure OpenAI account(s)")
+
+    for _oa in _aoai_accounts:
+        _oa_name = _oa.get("name", "")
+        _oa_rg = _oa.get("resourceGroup", "")
+        _oa_id = _oa.get("id", "")
+        log(f"[azure] Checking Azure OpenAI account {_oa_name} (rg={_oa_rg})...")
+
+        # FORGE-AZ-501: Azure OpenAI Public Network Access Enabled
+        _pub_access = (_oa.get("properties") or {}).get("publicNetworkAccess", "")
+        _net_acls = (_oa.get("properties") or {}).get("networkAcls") or {}
+        _default_action = _net_acls.get("defaultAction", "")
+        if _pub_access.lower() != "disabled" and _default_action.lower() != "deny":
+            log(f"[azure] {_oa_name} — public network access enabled (HIGH)")
+            finding(title=f"Azure OpenAI: Public network access enabled: {_oa_name}",
+                     severity="HIGH",
+                     description="Azure OpenAI service has public network access enabled "
+                                 "with no network ACL restriction. Model endpoints are "
+                                 "reachable from the public internet.",
+                     data={"catalogue_id": "FORGE-AZ-501",
+                           "affected": f"{_oa_rg}/{_oa_name}",
+                           "remediation": "Disable public network access or set network ACL "
+                                          "default action to Deny with explicit IP/VNet rules."},
+                     output_file=str(out_dir / "openai_accounts.json"))
+        else:
+            log(f"[azure] {_oa_name} — network isolation OK")
+
+        # FORGE-AZ-502: Azure OpenAI Content Filtering Not Configured
+        # Check deployments for content filter association
+        _oa_deploys = _az_run(["cognitiveservices", "account", "deployment", "list",
+                                "--name", _oa_name, "--resource-group", _oa_rg],
+                               f"openai_{_oa_name}_deployments.json") or []
+        _unfiltered = []
+        for _dep in _oa_deploys:
+            _dep_name = _dep.get("name", "")
+            _rai_policy = (_dep.get("properties") or {}).get("raiPolicyName") or ""
+            if not _rai_policy:
+                _unfiltered.append(_dep_name)
+        if _unfiltered:
+            log(f"[azure] {_oa_name} — {len(_unfiltered)} deployment(s) without content filter (MEDIUM)")
+            finding(title=f"Azure OpenAI: Content filtering not configured: {_oa_name}",
+                     severity="MEDIUM",
+                     description=f"Azure OpenAI deployment(s) {', '.join(_unfiltered)} do not have "
+                                 "a content filtering (RAI) policy attached. Prompts and completions "
+                                 "are not screened for harmful content.",
+                     data={"catalogue_id": "FORGE-AZ-502",
+                           "affected": f"{_oa_rg}/{_oa_name}",
+                           "remediation": "Assign a content filter policy to each deployment via "
+                                          "Azure AI Studio or the REST API."},
+                     output_file=str(out_dir / f"openai_{_oa_name}_deployments.json"))
+        else:
+            log(f"[azure] {_oa_name} — content filtering OK on all deployments")
+
+        # FORGE-AZ-503: Azure OpenAI Diagnostic Logging Disabled
+        if _oa_id:
+            _diag_settings = _az_run(["monitor", "diagnostic-settings", "list",
+                                       "--resource", _oa_id],
+                                      f"openai_{_oa_name}_diagnostics.json") or {}
+            _diag_list = _diag_settings.get("value") or (
+                _diag_settings if isinstance(_diag_settings, list) else [])
+            if not _diag_list:
+                log(f"[azure] {_oa_name} — no diagnostic settings (MEDIUM)")
+                finding(title=f"Azure OpenAI: Diagnostic logging disabled: {_oa_name}",
+                         severity="MEDIUM",
+                         description="Azure OpenAI account has no diagnostic settings configured. "
+                                     "API calls, content filtering events, and operational metrics "
+                                     "are not being logged for audit or incident response.",
+                         data={"catalogue_id": "FORGE-AZ-503",
+                               "affected": f"{_oa_rg}/{_oa_name}",
+                               "remediation": "Create a diagnostic setting to send logs to "
+                                              "Log Analytics, Storage, or Event Hub."},
+                         output_file=str(out_dir / f"openai_{_oa_name}_diagnostics.json"))
+            else:
+                log(f"[azure] {_oa_name} — diagnostic settings: {len(_diag_list)}")
+
+        # FORGE-AZ-504: Azure OpenAI Managed Identity Not Used
+        _identity = _oa.get("identity") or {}
+        _id_type = (_identity.get("type") or "").lower()
+        if "systemassigned" not in _id_type and "userassigned" not in _id_type:
+            log(f"[azure] {_oa_name} — no managed identity (MEDIUM)")
+            finding(title=f"Azure OpenAI: Managed identity not used: {_oa_name}",
+                     severity="MEDIUM",
+                     description="Azure OpenAI account does not use a managed identity "
+                                 "(system-assigned or user-assigned). Authentication relies on "
+                                 "API keys, which can be leaked, shared, or difficult to rotate.",
+                     data={"catalogue_id": "FORGE-AZ-504",
+                           "affected": f"{_oa_rg}/{_oa_name}",
+                           "remediation": "Enable a system-assigned or user-assigned managed "
+                                          "identity and use Azure RBAC for authentication."},
+                     output_file=str(out_dir / "openai_accounts.json"))
+        else:
+            log(f"[azure] {_oa_name} — managed identity: {_id_type}")
+
+        # FORGE-AZ-505: Azure OpenAI Customer-Managed Key Not Configured
+        _encryption = (_oa.get("properties") or {}).get("encryption") or {}
+        _key_source = (_encryption.get("keySource") or "").lower()
+        _kv_props = _encryption.get("keyVaultProperties") or {}
+        if "customer" not in _key_source and not _kv_props.get("keyName"):
+            log(f"[azure] {_oa_name} — no customer-managed key (LOW)")
+            finding(title=f"Azure OpenAI: Customer-managed key not configured: {_oa_name}",
+                     severity="LOW",
+                     description="Azure OpenAI account does not use a customer-managed key "
+                                 "(CMK) for encryption at rest. Data is encrypted with "
+                                 "Microsoft-managed keys, reducing customer control over "
+                                 "key lifecycle and access policies.",
+                     data={"catalogue_id": "FORGE-AZ-505",
+                           "affected": f"{_oa_rg}/{_oa_name}",
+                           "remediation": "Configure a customer-managed key from Azure Key Vault "
+                                          "for the Cognitive Services account encryption."},
+                     output_file=str(out_dir / "openai_accounts.json"))
+        else:
+            log(f"[azure] {_oa_name} — CMK encryption OK")
+
+    log("[azure] Azure OpenAI audit complete")
+
     log(f"[azure] Azure audit complete — subscription {subscription_id}")
     status("azure", "Azure Subscription Audit", "complete")
 
@@ -1241,6 +1366,151 @@ def audit_gcp(project_id: str, output_dir: Path) -> None:
                                    "affected": member,
                                    "role": role},
                              output_file=str(out_dir / "iam_policy.json"))
+
+    # ── Vertex AI ─────────────────────────────────────────────────────────────
+    _check_pause()
+    _save_checkpoint()
+    log("[gcp] Starting Vertex AI audit...")
+    status("gcp", "Vertex AI audit", "running")
+
+    # FORGE-GCP-501: Vertex AI Model Not Using VPC Peering
+    _vai_endpoints = _g_run(["ai", "endpoints", "list", "--region=us-central1"],
+                             "vertex_ai_endpoints.json") or []
+    log(f"[gcp] Found {len(_vai_endpoints)} Vertex AI endpoint(s)")
+    for _ep in _vai_endpoints:
+        _ep_name = _ep.get("displayName") or _ep.get("name", "")
+        _ep_id = _ep.get("name", "")
+        _network = _ep.get("network") or ""
+        if not _network:
+            log(f"[gcp] Vertex AI endpoint {_ep_name} — no VPC peering (MEDIUM)")
+            finding(title=f"Vertex AI: Model endpoint not using VPC peering: {_ep_name}",
+                     severity="MEDIUM",
+                     description="Vertex AI model endpoint is not configured with VPC peering "
+                                 "for private connectivity. Traffic traverses public Google APIs.",
+                     data={"catalogue_id": "FORGE-GCP-501",
+                           "affected": _ep_name,
+                           "remediation": "Configure VPC peering on the Vertex AI endpoint to "
+                                          "keep model traffic within a private network."},
+                     output_file=str(out_dir / "vertex_ai_endpoints.json"))
+
+        # FORGE-GCP-502: Vertex AI Endpoint Public Access Enabled
+        _dmc = _ep.get("dedicatedEndpointEnabled")
+        _private_service = bool(_network)
+        if not _private_service and _dmc is not True:
+            log(f"[gcp] Vertex AI endpoint {_ep_name} — public access enabled (HIGH)")
+            finding(title=f"Vertex AI: Endpoint public access enabled: {_ep_name}",
+                     severity="HIGH",
+                     description="Vertex AI endpoint allows public internet access. "
+                                 "Model inference requests are reachable from any network.",
+                     data={"catalogue_id": "FORGE-GCP-502",
+                           "affected": _ep_name,
+                           "remediation": "Restrict the Vertex AI endpoint to private access "
+                                          "via VPC peering or Private Service Connect."},
+                     output_file=str(out_dir / "vertex_ai_endpoints.json"))
+
+    _check_pause()
+
+    # FORGE-GCP-503: Vertex AI Model Monitoring Not Configured
+    _vai_monitoring = _g_run(["ai", "model-monitoring-jobs", "list",
+                               "--region=us-central1"],
+                              "vertex_ai_monitoring.json") or []
+    if not _vai_monitoring:
+        log("[gcp] No Vertex AI model monitoring jobs configured (MEDIUM)")
+        finding(title="Vertex AI: Model monitoring not configured",
+                 severity="MEDIUM",
+                 description="No Vertex AI model monitoring jobs exist. "
+                             "Without monitoring, data drift, prediction drift, and "
+                             "feature attribution skew go undetected.",
+                 data={"catalogue_id": "FORGE-GCP-503",
+                       "remediation": "Create a Vertex AI Model Monitoring job to detect "
+                                      "drift, skew, and anomalies in model predictions."},
+                 output_file=str(out_dir / "vertex_ai_monitoring.json"))
+    else:
+        log(f"[gcp] Vertex AI monitoring jobs: {len(_vai_monitoring)}")
+
+    _check_pause()
+
+    # FORGE-GCP-504: Vertex AI Pipeline Logging Disabled
+    _vai_audit = _g_run(["logging", "sinks", "list"],
+                          "vertex_ai_audit_logs.json") or []
+    _has_vertex_sink = any("aiplatform" in json.dumps(s).lower()
+                           for s in _vai_audit if isinstance(s, dict))
+    if not _has_vertex_sink:
+        _audit_cfg = _g_run(["projects", "get-iam-policy", project_id],
+                              "vertex_ai_audit_check.json") or {}
+        _audit_cfgs = _audit_cfg.get("auditConfigs") or []
+        _vertex_audited = any(
+            ac.get("service") in ("aiplatform.googleapis.com", "allServices")
+            for ac in _audit_cfgs
+        )
+        if not _vertex_audited:
+            log("[gcp] Vertex AI pipeline logging not configured (MEDIUM)")
+            finding(title="Vertex AI: Pipeline logging disabled",
+                     severity="MEDIUM",
+                     description="Cloud Audit Logs are not explicitly configured for "
+                                 "Vertex AI (aiplatform.googleapis.com). Pipeline executions, "
+                                 "model deployments, and prediction requests may not be auditable.",
+                     data={"catalogue_id": "FORGE-GCP-504",
+                           "remediation": "Enable Cloud Audit Logs for aiplatform.googleapis.com "
+                                          "with DATA_READ and DATA_WRITE log types."},
+                     output_file=str(out_dir / "vertex_ai_audit_logs.json"))
+        else:
+            log("[gcp] Vertex AI audit logging configured via auditConfigs")
+    else:
+        log("[gcp] Vertex AI logging sink present")
+
+    _check_pause()
+
+    # FORGE-GCP-505: Vertex AI Workbench Notebook Public IP
+    _vai_notebooks = _g_run(["notebooks", "instances", "list",
+                              "--location=-"],
+                             "vertex_ai_notebooks.json") or []
+    log(f"[gcp] Found {len(_vai_notebooks)} Workbench notebook(s)")
+    for _nb in _vai_notebooks:
+        _nb_name = _nb.get("name", "").rsplit("/", 1)[-1]
+        _no_public = _nb.get("noPublicIp", False)
+        if not _no_public:
+            log(f"[gcp] Notebook {_nb_name} — has public IP (HIGH)")
+            finding(title=f"Vertex AI: Workbench notebook has public IP: {_nb_name}",
+                     severity="HIGH",
+                     description="Vertex AI Workbench managed notebook has an external IP "
+                                 "address. Notebooks contain code, credentials, and data; "
+                                 "public exposure increases attack surface.",
+                     data={"catalogue_id": "FORGE-GCP-505",
+                           "affected": _nb_name,
+                           "remediation": "Recreate the notebook with --no-public-ip or "
+                                          "configure Private Google Access on the subnet."},
+                     output_file=str(out_dir / "vertex_ai_notebooks.json"))
+        else:
+            log(f"[gcp] Notebook {_nb_name} — no public IP OK")
+
+    _check_pause()
+
+    # FORGE-GCP-506: Vertex AI Feature Store No Encryption
+    _vai_featurestores = _g_run(["ai", "featurestores", "list",
+                                  "--region=us-central1"],
+                                 "vertex_ai_featurestores.json") or []
+    log(f"[gcp] Found {len(_vai_featurestores)} Vertex AI feature store(s)")
+    for _fs in _vai_featurestores:
+        _fs_name = (_fs.get("name") or "").rsplit("/", 1)[-1]
+        _enc_spec = _fs.get("encryptionSpec") or {}
+        _kms_key = _enc_spec.get("kmsKeyName") or ""
+        if not _kms_key:
+            log(f"[gcp] Feature store {_fs_name} — no CMEK configured (MEDIUM)")
+            finding(title=f"Vertex AI: Feature Store no CMEK: {_fs_name}",
+                     severity="MEDIUM",
+                     description="Vertex AI Feature Store does not use a customer-managed "
+                                 "encryption key (CMEK). Data is encrypted with Google-managed "
+                                 "keys only, reducing control over key rotation and access.",
+                     data={"catalogue_id": "FORGE-GCP-506",
+                           "affected": _fs_name,
+                           "remediation": "Recreate the Feature Store with --encryption-spec-kms-key-name "
+                                          "pointing to a Cloud KMS key you manage."},
+                     output_file=str(out_dir / "vertex_ai_featurestores.json"))
+        else:
+            log(f"[gcp] Feature store {_fs_name} — CMEK: {_kms_key}")
+
+    log("[gcp] Vertex AI audit complete")
 
     log(f"[gcp] GCP audit complete — project {project_id}")
     status("gcp", "GCP Project Audit", "complete")
