@@ -99,7 +99,7 @@
         "forge"
       ],
       "risk": "MEDIUM",
-      "description": "Soft-delete is not enabled on this Key Vault \u2014 accidental deletions cannot be recovered within the retention window.",
+      "description": "Soft-delete is not enabled on this Key Vault — accidental deletions cannot be recovered within the retention window.",
       "impact": "An attacker (or careless operator) who deletes a key, secret, or certificate causes permanent loss; downstream applications that depend on the material break and cannot be restored.",
       "cwe": [
         "CWE-693"
@@ -117,7 +117,7 @@
         "forge"
       ],
       "risk": "MEDIUM",
-      "description": "Purge-protection is disabled \u2014 soft-deleted keys / secrets can be immediately purged by an attacker with delete permission.",
+      "description": "Purge-protection is disabled — soft-deleted keys / secrets can be immediately purged by an attacker with delete permission.",
       "impact": "Attacker with Contributor or Key Vault Contributor can soft-delete then immediately purge, bypassing the soft-delete grace window and destroying evidence.",
       "cwe": [
         "CWE-693"
@@ -224,7 +224,7 @@
         "forge"
       ],
       "risk": "HIGH",
-      "description": "No S3 public access block configured \u2014 objects may be publicly accessible via ACLs or bucket policies.",
+      "description": "No S3 public access block configured — objects may be publicly accessible via ACLs or bucket policies.",
       "impact": "Without a public access block, misconfigured bucket policies or object ACLs can expose sensitive data to the entire internet. An attacker can enumerate and download objects without authentication.",
       "cwe": [
         "CWE-284"
@@ -341,7 +341,7 @@
         "forge"
       ],
       "risk": "LOW",
-      "description": "Versioning is not enabled on the S3 bucket \u2014 accidental deletions or overwrites are unrecoverable.",
+      "description": "Versioning is not enabled on the S3 bucket — accidental deletions or overwrites are unrecoverable.",
       "impact": "Without versioning, a compromised credential or accidental deletion permanently destroys data. Ransomware actors who gain S3 write access can overwrite objects with no recovery path.",
       "cwe": [
         "CWE-693"
@@ -452,7 +452,7 @@
         "forge"
       ],
       "risk": "LOW",
-      "description": "Server access logging is not enabled on the S3 bucket \u2014 access patterns are not auditable.",
+      "description": "Server access logging is not enabled on the S3 bucket — access patterns are not auditable.",
       "impact": "Without access logs, unauthorized access or data exfiltration from the bucket cannot be detected or investigated after the fact. Incident response is severely hampered.",
       "cwe": [
         "CWE-778"
@@ -493,7 +493,7 @@
       "kev": false,
       "remediation_brief": "Enable server access logging to a dedicated logging bucket.",
       "remediation_component": "Configuration",
-      "remediation_category": "Logging",
+      "remediation_category": "Logging and Monitoring",
       "remediation_effort": "Easy",
       "validation_tools": [
         "aws",
@@ -510,7 +510,7 @@
         "forge"
       ],
       "risk": "CRITICAL",
-      "description": "The S3 bucket policy evaluates as public \u2014 objects may be accessible to anyone on the internet.",
+      "description": "The S3 bucket policy evaluates as public — objects may be accessible to anyone on the internet.",
       "impact": "Any anonymous internet user can list and download objects from the bucket. Sensitive data (PII, credentials, backups, intellectual property) is fully exposed. This is a common root cause of major data breaches.",
       "cwe": [
         "CWE-284",
@@ -571,7 +571,7 @@
         "forge"
       ],
       "risk": "MEDIUM",
-      "description": "MFA Delete is not enabled \u2014 versioned objects can be permanently deleted without MFA authentication.",
+      "description": "MFA Delete is not enabled — versioned objects can be permanently deleted without MFA authentication.",
       "impact": "An attacker with DeleteObject permission can permanently remove object versions and delete markers, destroying data and audit trails even when versioning is enabled. MFA Delete would require a second factor for these destructive operations.",
       "cwe": [
         "CWE-308"
@@ -1181,7 +1181,7 @@
         "forge"
       ],
       "risk": "CRITICAL",
-      "description": "The AWS root account has access keys configured. Root keys should never exist \u2014 they grant unrestricted, irrevocable access.",
+      "description": "The AWS root account has access keys configured. Root keys should never exist — they grant unrestricted, irrevocable access.",
       "impact": "Root credentials cannot be scoped by IAM policies or SCPs. Compromise gives an attacker absolute control: they can close the account, change billing, bypass all IAM controls, and destroy all resources.",
       "cwe": [
         "CWE-250",
@@ -1367,7 +1367,7 @@
       ],
       "risk": "CRITICAL",
       "description": "The AWS root account does not have MFA enabled. The root account has unrestricted access to all AWS services and resources.",
-      "impact": "Without MFA, a compromised root password grants complete account takeover \u2014 including the ability to delete all resources, exfiltrate all data, and lock out all other users. Root access cannot be restricted by IAM policies.",
+      "impact": "Without MFA, a compromised root password grants complete account takeover — including the ability to delete all resources, exfiltrate all data, and lock out all other users. Root access cannot be restricted by IAM policies.",
       "cwe": [
         "CWE-308"
       ],
@@ -1414,7 +1414,7 @@
       "searchsploit_terms": [],
       "metasploit_modules": [],
       "kev": false,
-      "remediation_brief": "Enable MFA on the root account: AWS Console \u2192 My Security Credentials \u2192 MFA \u2192 Activate MFA. Use a hardware FIDO2 key for strongest protection.",
+      "remediation_brief": "Enable MFA on the root account: AWS Console → My Security Credentials → MFA → Activate MFA. Use a hardware FIDO2 key for strongest protection.",
       "remediation_component": "Authentication",
       "remediation_category": "Access Control",
       "remediation_effort": "Easy",
@@ -1436,7 +1436,7 @@
       ],
       "risk": "MEDIUM",
       "description": "IAM user has no console password, no active access keys, and no MFA. This appears to be an unused or orphaned account.",
-      "impact": "Orphaned accounts increase attack surface \u2014 if credentials are later enabled without proper controls, the account becomes a pivot point. Dormant accounts also indicate poor identity lifecycle management.",
+      "impact": "Orphaned accounts increase attack surface — if credentials are later enabled without proper controls, the account becomes a pivot point. Dormant accounts also indicate poor identity lifecycle management.",
       "cwe": [
         "CWE-672"
       ],
@@ -1733,7 +1733,7 @@
         "forge"
       ],
       "risk": "MEDIUM",
-      "description": "Deletion protection is disabled on the RDS instance \u2014 the database can be deleted without safeguard.",
+      "description": "Deletion protection is disabled on the RDS instance — the database can be deleted without safeguard.",
       "impact": "An attacker or careless operator with sufficient IAM permissions can delete the production database with a single API call, causing total data loss and service outage.",
       "cwe": [
         "CWE-693"
@@ -1788,7 +1788,7 @@
         "forge"
       ],
       "risk": "MEDIUM",
-      "description": "Multi-AZ deployment is not enabled \u2014 there is no standby replica for automatic failover.",
+      "description": "Multi-AZ deployment is not enabled — there is no standby replica for automatic failover.",
       "impact": "A single availability zone failure causes a full database outage with no automatic failover. Recovery time depends on snapshot restore, which can take hours for large databases.",
       "cwe": [
         "CWE-693"
@@ -1837,7 +1837,7 @@
       ],
       "risk": "HIGH",
       "description": "No CloudTrail trails exist in this region/account. API activity is not logged.",
-      "impact": "Without CloudTrail, all AWS API calls go unrecorded. Attackers can operate undetected \u2014 creating users, exfiltrating data, modifying resources \u2014 with no audit trail for incident response.",
+      "impact": "Without CloudTrail, all AWS API calls go unrecorded. Attackers can operate undetected — creating users, exfiltrating data, modifying resources — with no audit trail for incident response.",
       "cwe": [
         "CWE-778"
       ],
@@ -1880,7 +1880,7 @@
       "kev": false,
       "remediation_brief": "Create a multi-region CloudTrail trail logging to a dedicated, encrypted S3 bucket.",
       "remediation_component": "Configuration",
-      "remediation_category": "Logging",
+      "remediation_category": "Logging and Monitoring",
       "remediation_effort": "Moderate",
       "validation_tools": [
         "aws",
@@ -1941,7 +1941,7 @@
       "kev": false,
       "remediation_brief": "aws cloudtrail start-logging --name <trail>",
       "remediation_component": "Configuration",
-      "remediation_category": "Logging",
+      "remediation_category": "Logging and Monitoring",
       "remediation_effort": "Easy",
       "validation_tools": [
         "aws",
@@ -2045,7 +2045,7 @@
       "kev": false,
       "remediation_brief": "Configure a CloudWatch Logs log group and IAM role for the trail to enable real-time event delivery.",
       "remediation_component": "Configuration",
-      "remediation_category": "Logging",
+      "remediation_category": "Logging and Monitoring",
       "remediation_effort": "Moderate",
       "validation_tools": [
         "aws",
@@ -2177,7 +2177,7 @@
         "forge"
       ],
       "risk": "CRITICAL",
-      "description": "Lambda function has a resource-based policy granting Principal=* with no Condition \u2014 anyone can invoke this function.",
+      "description": "Lambda function has a resource-based policy granting Principal=* with no Condition — anyone can invoke this function.",
       "impact": "Any AWS account or anonymous caller can invoke the function, potentially triggering unintended actions, exhausting concurrency limits, incurring costs, or exploiting vulnerabilities in the function code.",
       "cwe": [
         "CWE-284",
@@ -2240,7 +2240,7 @@
         "forge"
       ],
       "risk": "HIGH",
-      "description": "Lambda function has a function URL with AuthType=NONE \u2014 anyone on the internet can invoke it without credentials.",
+      "description": "Lambda function has a function URL with AuthType=NONE — anyone on the internet can invoke it without credentials.",
       "impact": "The function URL is a public HTTPS endpoint with no authentication. Attackers can invoke the function directly, abuse its functionality, cause cost spikes, or exploit vulnerabilities in the handler code.",
       "cwe": [
         "CWE-306"
@@ -2354,7 +2354,7 @@
         "forge"
       ],
       "risk": "MEDIUM",
-      "description": "VPC does not have VPC Flow Logs enabled \u2014 network traffic is not auditable.",
+      "description": "VPC does not have VPC Flow Logs enabled — network traffic is not auditable.",
       "impact": "Without flow logs, network-level anomalies (lateral movement, data exfiltration, port scanning) cannot be detected or investigated. Incident response lacks network forensic evidence.",
       "cwe": [
         "CWE-778"
@@ -2398,7 +2398,7 @@
       "kev": false,
       "remediation_brief": "aws ec2 create-flow-logs --resource-type VPC --resource-ids <vpc-id> --traffic-type ALL --log-destination-type cloud-watch-logs",
       "remediation_component": "Configuration",
-      "remediation_category": "Logging",
+      "remediation_category": "Logging and Monitoring",
       "remediation_effort": "Easy",
       "validation_tools": [
         "aws",
@@ -2473,7 +2473,7 @@
         "forge"
       ],
       "risk": "CRITICAL",
-      "description": "EFS file system has a resource policy granting Principal=* \u2014 any AWS principal can mount and access the filesystem.",
+      "description": "EFS file system has a resource policy granting Principal=* — any AWS principal can mount and access the filesystem.",
       "impact": "Any AWS account can mount the EFS share and read or write all files. Sensitive data, configuration files, and application code on the filesystem are fully exposed.",
       "cwe": [
         "CWE-284",
@@ -2765,7 +2765,7 @@
         "forge"
       ],
       "risk": "MEDIUM",
-      "description": "Amazon GuardDuty is not enabled in this region \u2014 threat detection for the account is absent.",
+      "description": "Amazon GuardDuty is not enabled in this region — threat detection for the account is absent.",
       "impact": "Without GuardDuty, automated threat detection (compromised credentials, cryptocurrency mining, data exfiltration patterns, unusual API behavior) is not active. Attacks proceed undetected.",
       "cwe": [
         "CWE-778"
@@ -2806,7 +2806,7 @@
       "kev": false,
       "remediation_brief": "aws guardduty create-detector --enable",
       "remediation_component": "Configuration",
-      "remediation_category": "Logging",
+      "remediation_category": "Logging and Monitoring",
       "remediation_effort": "Easy",
       "validation_tools": [
         "aws",
@@ -2824,7 +2824,7 @@
         "forge"
       ],
       "risk": "MEDIUM",
-      "description": "AWS Security Hub is not enabled in this region \u2014 centralized security posture management is absent.",
+      "description": "AWS Security Hub is not enabled in this region — centralized security posture management is absent.",
       "impact": "Without Security Hub, there is no unified view of security findings across AWS services. Compliance checks (CIS Benchmarks, PCI DSS, AWS Foundational Best Practices) do not run, and cross-service correlation is unavailable.",
       "cwe": [
         "CWE-778"
@@ -2859,7 +2859,7 @@
       "kev": false,
       "remediation_brief": "aws securityhub enable-security-hub",
       "remediation_component": "Configuration",
-      "remediation_category": "Logging",
+      "remediation_category": "Logging and Monitoring",
       "remediation_effort": "Easy",
       "validation_tools": [
         "aws",
@@ -3103,7 +3103,7 @@
         "forge"
       ],
       "risk": "CRITICAL",
-      "description": "OpenSearch domain is not deployed inside a VPC \u2014 the endpoint is accessible from the public internet.",
+      "description": "OpenSearch domain is not deployed inside a VPC — the endpoint is accessible from the public internet.",
       "impact": "The OpenSearch endpoint is directly reachable from the internet. If access policies are misconfigured, any attacker can query, modify, or delete indices containing sensitive data.",
       "cwe": [
         "CWE-284"
@@ -3311,7 +3311,7 @@
       "kev": false,
       "remediation_brief": "Enable standard or real-time access logging to an S3 bucket.",
       "remediation_component": "Configuration",
-      "remediation_category": "Logging",
+      "remediation_category": "Logging and Monitoring",
       "remediation_effort": "Easy",
       "validation_tools": [
         "aws",
@@ -3494,7 +3494,7 @@
       ],
       "risk": "INFO",
       "description": "The audit credentials lack permissions for one or more AWS services. Findings for these services may be incomplete.",
-      "impact": "Incomplete audit coverage \u2014 security misconfigurations in denied services go undetected, potentially leaving vulnerabilities unaddressed.",
+      "impact": "Incomplete audit coverage — security misconfigurations in denied services go undetected, potentially leaving vulnerabilities unaddressed.",
       "cwe": [],
       "cve_examples": [],
       "cvss_v3_base": null,
@@ -3579,7 +3579,7 @@
       "remediation_brief": "Configure VPC peering or Private Service Connect on the Vertex AI endpoint to keep model traffic within a private network.",
       "remediation_effort": "Moderate",
       "remediation_component": "Network",
-      "remediation_category": "Network Segmentation",
+      "remediation_category": "Network Security",
       "validation_tools": [
         "gcloud"
       ]
@@ -3643,7 +3643,7 @@
       "remediation_brief": "Restrict the Vertex AI endpoint to private access via VPC peering or Private Service Connect. Deny public internet connectivity.",
       "remediation_effort": "Moderate",
       "remediation_component": "Network",
-      "remediation_category": "Network Segmentation",
+      "remediation_category": "Network Security",
       "validation_tools": [
         "gcloud"
       ]
@@ -3694,7 +3694,7 @@
       "remediation_brief": "Create a Vertex AI Model Monitoring job to detect drift, skew, and anomalies in model predictions.",
       "remediation_effort": "Moderate",
       "remediation_component": "Application",
-      "remediation_category": "Monitoring",
+      "remediation_category": "Logging and Monitoring",
       "validation_tools": [
         "gcloud"
       ]
@@ -3758,7 +3758,7 @@
       "remediation_brief": "Enable Cloud Audit Logs for aiplatform.googleapis.com with DATA_READ and DATA_WRITE log types.",
       "remediation_effort": "Easy",
       "remediation_component": "Configuration",
-      "remediation_category": "Monitoring",
+      "remediation_category": "Logging and Monitoring",
       "validation_tools": [
         "gcloud"
       ]
@@ -3821,7 +3821,7 @@
       "remediation_brief": "Recreate the notebook with --no-public-ip or configure Private Google Access on the subnet.",
       "remediation_effort": "Moderate",
       "remediation_component": "Network",
-      "remediation_category": "Network Segmentation",
+      "remediation_category": "Network Security",
       "validation_tools": [
         "gcloud"
       ]
@@ -3943,7 +3943,7 @@
       "remediation_brief": "Disable public network access or set network ACL default action to Deny with explicit IP/VNet allow rules.",
       "remediation_effort": "Moderate",
       "remediation_component": "Network",
-      "remediation_category": "Network Segmentation",
+      "remediation_category": "Network Security",
       "validation_tools": [
         "az"
       ]
@@ -4056,7 +4056,7 @@
       "remediation_brief": "Create a diagnostic setting to send Azure OpenAI logs to Log Analytics workspace, Storage Account, or Event Hub.",
       "remediation_effort": "Easy",
       "remediation_component": "Configuration",
-      "remediation_category": "Monitoring",
+      "remediation_category": "Logging and Monitoring",
       "validation_tools": [
         "az"
       ]
