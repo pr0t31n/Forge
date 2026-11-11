@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Forge installer — multi-platform."""
+import os
 import subprocess
 import sys
 import shutil
@@ -18,9 +19,66 @@ def _has(binary):
     return shutil.which(binary) is not None
 
 
+def _brew_safe(args):
+    """Run brew with args, delegating to SUDO_USER when running as root."""
+    brew_path = shutil.which("brew")
+    if not brew_path:
+        for p in ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"]:
+            if os.path.isfile(p):
+                brew_path = p
+                break
+    if not brew_path:
+        print("  [!] brew not found — skipping")
+        return
+    cmd = [brew_path] + args
+    if os.geteuid() == 0:
+        user = os.environ.get("SUDO_USER", "").strip()
+        if not user or user == "root":
+            try:
+                r = subprocess.run(["logname"], capture_output=True, text=True, timeout=3)
+                user = r.stdout.strip() if r.returncode == 0 else ""
+            except Exception:
+                user = ""
+        if not user or user == "root":
+            print(f"  [!] Running as root with no real user — skipping: brew {' '.join(args)}")
+            return
+        cmd = ["sudo", "-u", user, "-H"] + cmd
+    print(f"  → {' '.join(cmd)}")
+    subprocess.run(cmd, check=False)
+
+
+
+def _brew_cmd_prefix():
+    """Return the brew command prefix, delegating to SUDO_USER when root."""
+    brew_path = shutil.which("brew")
+    if not brew_path:
+        for p in ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"]:
+            if os.path.isfile(p):
+                brew_path = p
+                break
+    if not brew_path:
+        return None
+    prefix = [brew_path]
+    if os.geteuid() == 0:
+        user = os.environ.get("SUDO_USER", "").strip()
+        if not user or user == "root":
+            try:
+                r = subprocess.run(["logname"], capture_output=True, text=True, timeout=3)
+                user = r.stdout.strip() if r.returncode == 0 else ""
+            except Exception:
+                user = ""
+        if not user or user == "root":
+            return None
+        prefix = ["sudo", "-u", user, "-H", brew_path]
+    return prefix
+
+
 def _brew_installed(formula):
+    prefix = _brew_cmd_prefix()
+    if not prefix:
+        return False
     try:
-        r = subprocess.run(["brew", "list", "--formula", "-1"],
+        r = subprocess.run(prefix + ["list", "--formula", "-1"],
                            capture_output=True, text=True, timeout=15)
         return formula in r.stdout.split()
     except Exception:
@@ -28,8 +86,11 @@ def _brew_installed(formula):
 
 
 def _brew_cask_installed(cask):
+    prefix = _brew_cmd_prefix()
+    if not prefix:
+        return False
     try:
-        r = subprocess.run(["brew", "list", "--cask", "-1"],
+        r = subprocess.run(prefix + ["list", "--cask", "-1"],
                            capture_output=True, text=True, timeout=15)
         return cask in r.stdout.split()
     except Exception:
@@ -102,21 +163,21 @@ def install_system_deps():
                 if _brew_installed("awscli"):
                     print("  [ok] awscli already installed")
                 else:
-                    _run(["brew", "install", "awscli"], check=False)
+                    _brew_safe(["install", "awscli"])
             else:
                 print("  [ok] aws already installed")
             if not _has("az"):
                 if _brew_installed("azure-cli"):
                     print("  [ok] azure-cli already installed")
                 else:
-                    _run(["brew", "install", "azure-cli"], check=False)
+                    _brew_safe(["install", "azure-cli"])
             else:
                 print("  [ok] az already installed")
             if not _has("gcloud"):
                 if _brew_cask_installed("google-cloud-sdk"):
                     print("  [ok] google-cloud-sdk already installed")
                 else:
-                    _run(["brew", "install", "--cask", "google-cloud-sdk"], check=False)
+                    _brew_safe(["install", "--cask", "google-cloud-sdk"])
             else:
                 print("  [ok] gcloud already installed")
     elif sys.platform == "win32":
