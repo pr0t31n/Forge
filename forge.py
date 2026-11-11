@@ -53,6 +53,14 @@ except ImportError:
     _PP = None
 
 _MANAGED = os.environ.get("CRUCIBLE_MANAGED", "") == "1"
+
+try:
+    import sys as _sys_ie
+    if "/opt/pr0t31n/shared" not in _sys_ie.path:
+        _sys_ie.path.insert(0, "/opt/pr0t31n/shared")
+    import pr0t31n_intel_emitter as _ie
+except ImportError:
+    _ie = None
 _findings: list = []
 
 _fdb = None
@@ -1659,6 +1667,20 @@ def _build_aws_intelligence(out_dir: Path, region: str, findings: list,
         log(f"[aws] Wrote cloud_inventory.json ({len(inventory)} resource(s))")
     except Exception as exc:
         err(f"[aws] cloud_inventory.json write failed: {exc}")
+    if _ie and _MANAGED and inventory:
+        try:
+            _ie.emit_intel("cloud_resource", [
+                {
+                    "resource_type": r.get("resource_type", r.get("service", "")),
+                    "arn":           r.get("arn") or r.get("resource_id", ""),
+                    "region":        r.get("region", ""),
+                    "name":          r.get("name", r.get("resource_id", "")),
+                    "state":         r.get("status", ""),
+                    "public":        r.get("public", False),
+                } for r in inventory
+            ], bulk=True)
+        except Exception:
+            pass
 
     # ── iam_matrix.json ──────────────────────────────────────────────────────
     iam_matrix = []
@@ -1695,6 +1717,19 @@ def _build_aws_intelligence(out_dir: Path, region: str, findings: list,
         log(f"[aws] Wrote iam_matrix.json ({len(iam_matrix)} user(s))")
     except Exception as exc:
         err(f"[aws] iam_matrix.json write failed: {exc}")
+    if _ie and _MANAGED and iam_matrix:
+        try:
+            _ie.emit_intel("cloud_iam_policy", [
+                {
+                    "name":          u.get("user", ""),
+                    "arn":           u.get("arn", ""),
+                    "policy_type":   "user",
+                    "attached_to":   u.get("user", ""),
+                    "permissions":   u.get("policies", ""),
+                } for u in iam_matrix
+            ], bulk=True)
+        except Exception:
+            pass
 
     # ── service_dashboard.json ───────────────────────────────────────────────
     svc_map = {
@@ -1748,6 +1783,17 @@ def _build_aws_intelligence(out_dir: Path, region: str, findings: list,
         log(f"[aws] Wrote service_dashboard.json ({len(dashboard)} service(s))")
     except Exception as exc:
         err(f"[aws] service_dashboard.json write failed: {exc}")
+    if _ie and _MANAGED and dashboard:
+        try:
+            _ie.emit_intel("cloud_service", [
+                {
+                    "service_name":   s.get("service", ""),
+                    "resource_count": s.get("resources", 0),
+                    "status":         s.get("status", ""),
+                } for s in dashboard
+            ], bulk=True)
+        except Exception:
+            pass
 
 
 def _detect_aws_region(aws: str, profile: str) -> str:
