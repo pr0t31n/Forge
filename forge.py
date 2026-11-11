@@ -64,16 +64,17 @@ except ImportError:
 _findings: list = []
 
 _fdb = None
-_db_path = os.environ.get("PR0T31N_FINDINGS_DB")
-if _db_path:
-    try:
-        import sys as _s
-        if "/opt/pr0t31n/shared" not in _s.path:
-            _s.path.insert(0, "/opt/pr0t31n/shared")
-        import pr0t31n_findings_db
-        _fdb = pr0t31n_findings_db.FindingsDB(_db_path)
-    except Exception:
-        _fdb = None
+_db_path = os.environ.get("PR0T31N_FINDINGS_DB") or os.path.join(os.getcwd(), "findings.db")
+try:
+    import sys as _s
+    if "/opt/pr0t31n/shared" not in _s.path:
+        _s.path.insert(0, "/opt/pr0t31n/shared")
+    import pr0t31n_findings_db
+    _fdb = pr0t31n_findings_db.FindingsDB(_db_path)
+except Exception:
+    _fdb = None
+if _fdb and _ie:
+    _ie.init_db(_fdb)
 
 _MANUAL_KEY_STEPS = (
     "To create access keys manually:\n"
@@ -1661,13 +1662,7 @@ def _build_aws_intelligence(out_dir: Path, region: str, findings: list,
                 "findings": len(bf), "risk": _max_risk(bf),
             })
 
-    try:
-        (out_dir.parent / "cloud_inventory.json").write_text(
-            json.dumps(inventory, indent=2), encoding="utf-8")
-        log(f"[aws] Wrote cloud_inventory.json ({len(inventory)} resource(s))")
-    except Exception as exc:
-        err(f"[aws] cloud_inventory.json write failed: {exc}")
-    if _ie and _MANAGED and inventory:
+    if _ie and inventory:
         try:
             _ie.emit_intel("cloud_resource", [
                 {
@@ -1681,6 +1676,12 @@ def _build_aws_intelligence(out_dir: Path, region: str, findings: list,
             ], bulk=True)
         except Exception:
             pass
+    try:
+        (out_dir.parent / "cloud_inventory.json").write_text(
+            json.dumps(inventory, indent=2), encoding="utf-8")
+        log(f"[aws] Wrote cloud_inventory.json ({len(inventory)} resource(s))")
+    except Exception as exc:
+        err(f"[aws] cloud_inventory.json write failed: {exc}")
 
     # ── iam_matrix.json ──────────────────────────────────────────────────────
     iam_matrix = []
@@ -1711,13 +1712,7 @@ def _build_aws_intelligence(out_dir: Path, region: str, findings: list,
             "findings": len(uf),
             "risk": _max_risk(uf) if uf else "OK",
         })
-    try:
-        (out_dir.parent / "iam_matrix.json").write_text(
-            json.dumps(iam_matrix, indent=2), encoding="utf-8")
-        log(f"[aws] Wrote iam_matrix.json ({len(iam_matrix)} user(s))")
-    except Exception as exc:
-        err(f"[aws] iam_matrix.json write failed: {exc}")
-    if _ie and _MANAGED and iam_matrix:
+    if _ie and iam_matrix:
         try:
             _ie.emit_intel("cloud_iam_policy", [
                 {
@@ -1730,6 +1725,12 @@ def _build_aws_intelligence(out_dir: Path, region: str, findings: list,
             ], bulk=True)
         except Exception:
             pass
+    try:
+        (out_dir.parent / "iam_matrix.json").write_text(
+            json.dumps(iam_matrix, indent=2), encoding="utf-8")
+        log(f"[aws] Wrote iam_matrix.json ({len(iam_matrix)} user(s))")
+    except Exception as exc:
+        err(f"[aws] iam_matrix.json write failed: {exc}")
 
     # ── service_dashboard.json ───────────────────────────────────────────────
     svc_map = {
@@ -1777,13 +1778,7 @@ def _build_aws_intelligence(out_dir: Path, region: str, findings: list,
             "findings": len(sf), "status": st, "access": access,
             **rb,
         })
-    try:
-        (out_dir.parent / "service_dashboard.json").write_text(
-            json.dumps(dashboard, indent=2), encoding="utf-8")
-        log(f"[aws] Wrote service_dashboard.json ({len(dashboard)} service(s))")
-    except Exception as exc:
-        err(f"[aws] service_dashboard.json write failed: {exc}")
-    if _ie and _MANAGED and dashboard:
+    if _ie and dashboard:
         try:
             _ie.emit_intel("cloud_service", [
                 {
@@ -1794,6 +1789,12 @@ def _build_aws_intelligence(out_dir: Path, region: str, findings: list,
             ], bulk=True)
         except Exception:
             pass
+    try:
+        (out_dir.parent / "service_dashboard.json").write_text(
+            json.dumps(dashboard, indent=2), encoding="utf-8")
+        log(f"[aws] Wrote service_dashboard.json ({len(dashboard)} service(s))")
+    except Exception as exc:
+        err(f"[aws] service_dashboard.json write failed: {exc}")
 
 
 def _detect_aws_region(aws: str, profile: str) -> str:
