@@ -1560,6 +1560,33 @@ def _build_aws_intelligence(out_dir: Path, region: str, findings: list,
                 rc[k] += 1
         return rc
 
+    def _emit_resource(r):
+        if _ie:
+            try:
+                _ie.emit_intel("cloud_resource", {
+                    "resource_type": r.get("resource_type", r.get("service", "")),
+                    "arn":           r.get("arn") or r.get("resource_id", ""),
+                    "region":        r.get("region", ""),
+                    "name":          r.get("name", r.get("resource_id", "")),
+                    "state":         r.get("status", ""),
+                    "public":        r.get("public", False),
+                })
+            except Exception:
+                pass
+
+    def _emit_iam(u):
+        if _ie:
+            try:
+                _ie.emit_intel("cloud_iam_policy", {
+                    "name":        u.get("user", ""),
+                    "arn":         u.get("arn", ""),
+                    "policy_type": "user",
+                    "attached_to": u.get("user", ""),
+                    "permissions": u.get("policies", ""),
+                })
+            except Exception:
+                pass
+
     # ── cloud_inventory.json ─────────────────────────────────────────────────
     inventory = []
 
@@ -1576,6 +1603,7 @@ def _build_aws_intelligence(out_dir: Path, region: str, findings: list,
                 "region": "global", "status": "active",
                 "findings": len(bf), "risk": _max_risk(bf),
             })
+            _emit_resource(inventory[-1])
 
     # EC2 instances
     ec2_data = _safe_load("ec2_instances.json")
@@ -1597,6 +1625,7 @@ def _build_aws_intelligence(out_dir: Path, region: str, findings: list,
                     "region": region, "status": state,
                     "findings": len(bf), "risk": _max_risk(bf),
                 })
+                _emit_resource(inventory[-1])
 
     # EBS volumes
     ebs_data = _safe_load("ec2_volumes.json")
@@ -1610,6 +1639,7 @@ def _build_aws_intelligence(out_dir: Path, region: str, findings: list,
                 "region": region, "status": vol.get("State", "unknown"),
                 "findings": len(bf), "risk": _max_risk(bf),
             })
+            _emit_resource(inventory[-1])
 
     # RDS instances
     rds_data = _safe_load("rds_instances.json")
@@ -1623,6 +1653,7 @@ def _build_aws_intelligence(out_dir: Path, region: str, findings: list,
                 "region": region, "status": db.get("DBInstanceStatus", "unknown"),
                 "findings": len(bf), "risk": _max_risk(bf),
             })
+            _emit_resource(inventory[-1])
 
     # Lambda functions
     lam_data = _safe_load("lambda_functions.json")
@@ -1636,6 +1667,7 @@ def _build_aws_intelligence(out_dir: Path, region: str, findings: list,
                 "region": region, "status": "active",
                 "findings": len(bf), "risk": _max_risk(bf),
             })
+            _emit_resource(inventory[-1])
 
     # KMS keys
     kms_data = _safe_load("kms_keys.json")
@@ -1649,6 +1681,7 @@ def _build_aws_intelligence(out_dir: Path, region: str, findings: list,
                 "region": region, "status": "active",
                 "findings": len(bf), "risk": _max_risk(bf),
             })
+            _emit_resource(inventory[-1])
 
     # DynamoDB tables
     ddb_data = _safe_load("dynamodb_tables.json")
@@ -1661,6 +1694,7 @@ def _build_aws_intelligence(out_dir: Path, region: str, findings: list,
                 "region": region, "status": "active",
                 "findings": len(bf), "risk": _max_risk(bf),
             })
+            _emit_resource(inventory[-1])
 
     if _ie and inventory:
         try:
@@ -1712,6 +1746,7 @@ def _build_aws_intelligence(out_dir: Path, region: str, findings: list,
             "findings": len(uf),
             "risk": _max_risk(uf) if uf else "OK",
         })
+        _emit_iam(iam_matrix[-1])
     if _ie and iam_matrix:
         try:
             _ie.emit_intel("cloud_iam_policy", [
@@ -1778,6 +1813,15 @@ def _build_aws_intelligence(out_dir: Path, region: str, findings: list,
             "findings": len(sf), "status": st, "access": access,
             **rb,
         })
+        if _ie:
+            try:
+                _ie.emit_intel("cloud_service", {
+                    "service_name":   svc_name,
+                    "resource_count": n_res,
+                    "status":         st,
+                })
+            except Exception:
+                pass
     if _ie and dashboard:
         try:
             _ie.emit_intel("cloud_service", [
