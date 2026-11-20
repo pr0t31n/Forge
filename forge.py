@@ -22,6 +22,8 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
@@ -850,6 +852,64 @@ def _aws_console_login(console_url: str, username: str, password: str,
     log("[aws-console] Remember to delete it from IAM when the engagement ends")
     status("aws-console", "AWS Console Login", "complete")
     return profile
+
+
+class _ProgressManager:
+    """Thread-safe checkpoint for scan recovery."""
+    def __init__(self, checkpoint_file):
+        self._file = Path(checkpoint_file)
+        self._lock = threading.Lock()
+        self._state = self._load()
+    def _load(self):
+        if self._file.exists():
+            try:
+                data = json.loads(self._file.read_text(encoding="utf-8"))
+                data.setdefault("version", 1)
+                data.setdefault("completed_phases", [])
+                data.setdefault("phase_status", {})
+                return data
+            except Exception:
+                pass
+        return {"version": 1, "started": datetime.now(timezone.utc).isoformat(),
+                "completed_phases": [], "phase_status": {}}
+    def _save(self):
+        self._file.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=str(self._file.parent), suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(self._state, f, indent=2)
+            os.replace(tmp, str(self._file))
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except Exception:
+                pass
+    def is_phase_complete(self, phase):
+        with self._lock:
+            return phase in self._state.get("completed_phases", [])
+    def set_phase_status(self, phase, status, label="", detail=""):
+        with self._lock:
+            self._state.setdefault("phase_status", {})[phase] = {
+                "status": status, "label": label or phase,
+                "detail": detail, "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+            if status == "complete":
+                lst = self._state.setdefault("completed_phases", [])
+                if phase not in lst:
+                    lst.append(phase)
+            self._save()
+    def prepare_resume(self):
+        with self._lock:
+            ps = self._state.get("phase_status", {})
+            for k, v in ps.items():
+                if v.get("status") in ("running", "error"):
+                    v["status"] = "pending"
+                    v["updated_at"] = datetime.now(timezone.utc).isoformat()
+            self._save()
+            return dict(self._state)
+
+
+_PM: "_ProgressManager | None" = None
 
 
 def _check_pause():
@@ -5607,8 +5667,10 @@ def main() -> int:
         project_dir = Path.cwd() / f"forge_{args.client_short}_{ts}"
     project_dir.mkdir(parents=True, exist_ok=True)
 
-    global _RUN_DIR, _RUNLOG
+    global _RUN_DIR, _RUNLOG, _PM
     _RUN_DIR = project_dir
+    _PM = _ProgressManager(project_dir / "checkpoint.json")
+    _PM.prepare_resume()
     if _el is not None:
         try:
             _RUNLOG = _el.EventLogger(project_dir / "scan.log",
@@ -5659,10 +5721,20 @@ def main() -> int:
 
     _check_pause()
     if args.azure_subscription:
-        audit_azure(args.azure_subscription, project_dir)
+        if _PM.is_phase_complete("azure"):
+            log("[azure] Azure audit already complete — skipping (resume)")
+        else:
+            _PM.set_phase_status("azure", "running", "Azure Subscription Audit")
+            audit_azure(args.azure_subscription, project_dir)
+            _PM.set_phase_status("azure", "complete", "Azure Subscription Audit")
     _check_pause()
     if args.gcp_project:
-        audit_gcp(args.gcp_project, project_dir)
+        if _PM.is_phase_complete("gcp"):
+            log("[gcp] GCP audit already complete — skipping (resume)")
+        else:
+            _PM.set_phase_status("gcp", "running", "GCP Project Audit")
+            audit_gcp(args.gcp_project, project_dir)
+            _PM.set_phase_status("gcp", "complete", "GCP Project Audit")
     _check_pause()
     if has_aws or (not args.azure_subscription and not args.gcp_project):
         aws_profile = args.aws_profile
@@ -5683,7 +5755,12 @@ def main() -> int:
                     status("aws", "AWS Account Audit", "skipped")
                     aws_profile = None
         if aws_profile is not None:
-            audit_aws(aws_profile, args.aws_region, project_dir)
+            if _PM.is_phase_complete("aws"):
+                log("[aws] AWS audit already complete — skipping (resume)")
+            else:
+                _PM.set_phase_status("aws", "running", "AWS Account Audit")
+                audit_aws(aws_profile, args.aws_region, project_dir)
+                _PM.set_phase_status("aws", "complete", "AWS Account Audit")
 
     # Cleanup temp AWS credentials from ~/.aws/ (copy lives in run dir)
     if _aws_tmp_cleanup:
